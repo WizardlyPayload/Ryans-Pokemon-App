@@ -1,4 +1,58 @@
-# Root compose so Coolify (repo root) finds this file (many UIs default to .yaml).
-# Service definitions live in ebay-history-stack/; paths there stay relative to that folder.
-include:
-  - path: ebay-history-stack/docker-compose.yml
+# Full stack at repo root (Coolify-compatible — no `include`, explicit services).
+# Paths are relative to this file's directory.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ebayhist
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ebayhist_dev_change_me}
+      POSTGRES_DB: ebay_history
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./ebay-history-stack/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ebayhist -d ebay_history"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./ebay-history-stack/api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://ebayhist:${POSTGRES_PASSWORD:-ebayhist_dev_change_me}@postgres:5432/ebay_history
+      API_KEY: ${API_KEY:-dev-insecure-change-me}
+      PORT: 3001
+    ports:
+      - "${API_PORT:-3001}:3001"
+
+  crawler:
+    build:
+      context: ./ebay-history-stack/crawler
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://ebayhist:${POSTGRES_PASSWORD:-ebayhist_dev_change_me}@postgres:5432/ebay_history
+      CRAWLER_ENABLED: ${CRAWLER_ENABLED:-true}
+      GLOBAL_PAGES_PER_DAY: ${GLOBAL_PAGES_PER_DAY:-1000}
+      US_SHARE: ${US_SHARE:-0.5}
+      UK_SHARE: ${UK_SHARE:-0.5}
+      MIN_DELAY_MS: ${MIN_DELAY_MS:-8000}
+      MAX_DELAY_MS: ${MAX_DELAY_MS:-45000}
+      PARSE_VERSION: "1"
+      US_SEED_URL: ${US_SEED_URL:-https://www.ebay.com/sch/i.html?_sacat=31392&LH_Sold=1&LH_Complete=1&_ipg=60&rt=nc}
+      UK_SEED_URL: ${UK_SEED_URL:-https://www.ebay.co.uk/sch/i.html?_sacat=0&LH_Sold=1&LH_Complete=1&_ipg=60&rt=nc}
+
+volumes:
+  postgres_data:

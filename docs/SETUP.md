@@ -248,6 +248,7 @@ You are responsible for complying with **eBay’s terms**, rate limits, and appl
 | Server: `bot_wall` in logs | eBay is serving a block/challenge page; increase delays, reduce volume, or pause with `CRAWLER_ENABLED=false` until it clears. |
 | Windows: Docker build fails | Start **Docker Desktop** (Linux engine); the daemon must be running for `docker compose build`. |
 | Coolify: `open Dockerfile: no such file or directory` | Set **Build Pack** to **Docker Compose** (not Dockerfile). |
-| Coolify: “Please load a Compose file” / empty compose editor | **Docker Compose Location** must match the file **in Git** exactly (including **`.yaml` vs `.yml`**). This repo has **`docker-compose.yaml`** and **`docker-compose.yml`** at the root (same content). Use **`/docker-compose.yaml`** or **`/docker-compose.yml`** to match. Click **Show Deployable Compose** if Coolify can pull from Git. |
+| Coolify: “Please load a Compose file” / empty compose editor | **Docker Compose Location** must match the file **in Git** exactly (including **`.yaml` vs `.yml`**). Use **`/docker-compose.yaml`** or **`/docker-compose.yml`** at repo root. Click **Show Deployable Compose** after Git pull. |
+| Coolify: `no service selected` | Often caused by a compose file that only uses **`include:`** without top-level **`services:`** (Coolify’s merge step may not see services). This repo’s root **`docker-compose.yaml`** defines **`postgres`**, **`api`**, and **`crawler`** explicitly. Commit that file and redeploy. |
 
 For **Coolify-specific** routing or env injection, see [Coolify Docker Compose docs](https://coolify.io/docs/knowledge-base/docker/compose).
