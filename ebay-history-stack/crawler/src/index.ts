@@ -83,15 +83,15 @@ async function fetchOnePage(browser: Browser, market: Market, seedUrl: string, p
   const url = buildSearchUrl(seedUrl, pageNum);
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 120000 });
-    await page.waitForSelector("div.s-card[data-listingid]", { timeout: 45000 }).catch(() => {});
+    await page.waitForSelector("div.s-card[data-listingid], li.s-item", { timeout: 50000 }).catch(() => {});
+    await sleep(2500);
     const html = await page.content();
     if (botWall(html)) {
       throw new Error("bot_wall");
     }
     const rows = await page.evaluate(
       (pageUrlArg) => {
-        const cards = Array.from(document.querySelectorAll("div.s-card[data-listingid]"));
-        const out: Array<{
+        type Out = {
           itemId: string;
           title: string;
           priceText: string;
@@ -99,7 +99,15 @@ async function fetchOnePage(browser: Browser, market: Market, seedUrl: string, p
           thumbUrl: string;
           itemUrl: string;
           pageUrl: string;
-        }> = [];
+        };
+        const byId = new Map<string, Out>();
+
+        function pushRow(o: Out) {
+          if (!o.itemId || o.itemId.length < 10 || !o.itemUrl || o.title.length < 5) return;
+          if (!byId.has(o.itemId)) byId.set(o.itemId, o);
+        }
+
+        const cards = Array.from(document.querySelectorAll("div.s-card[data-listingid]"));
         for (const card of cards) {
           const listingId = card.getAttribute("data-listingid") || "";
           const links = Array.from(card.querySelectorAll('a.s-card__link[href*="/itm/"]'));
@@ -120,8 +128,7 @@ async function fetchOnePage(browser: Browser, market: Market, seedUrl: string, p
           const caption = cap?.textContent?.trim() || "";
           const thumbUrl = img?.getAttribute("src") || img?.getAttribute("data-src") || "";
           const cleanId = listingId.replace(/\D/g, "");
-          if (!cleanId || !href || title.length < 5) continue;
-          out.push({
+          pushRow({
             itemId: cleanId,
             title,
             priceText,
@@ -131,7 +138,42 @@ async function fetchOnePage(browser: Browser, market: Market, seedUrl: string, p
             pageUrl: pageUrlArg,
           });
         }
-        return out;
+
+        const items = Array.from(document.querySelectorAll("li.s-item"));
+        for (const li of items) {
+          const rawId =
+            li.getAttribute("data-listingid") ||
+            li.getAttribute("data-listing-id") ||
+            "";
+          let cleanId = rawId.replace(/\D/g, "");
+          const link = li.querySelector('a.s-item__link[href*="/itm/"]') as HTMLAnchorElement | null;
+          let href = link?.href ? link.href.split("?")[0] : "";
+          if (!cleanId && href) {
+            const m = href.match(/\/itm\/(\d{10,})/);
+            if (m) cleanId = m[1];
+          }
+          const titleEl = li.querySelector(".s-item__title span") || li.querySelector(".s-item__title");
+          let title = (titleEl?.textContent || "").replace(/\s+/g, " ").trim();
+          if (title.toLowerCase().includes("shop on ebay")) continue;
+          const priceEl = li.querySelector(".s-item__price");
+          const subEl = li.querySelector(".s-item__subtitle, .s-item__caption--dense");
+          const img = li.querySelector(".s-item__image-img") as HTMLImageElement | null;
+          if (!title && img) title = (img.getAttribute("alt") || "").trim();
+          const priceText = priceEl?.textContent?.trim() || "";
+          const caption = subEl?.textContent?.trim() || "";
+          const thumbUrl = img?.getAttribute("src") || img?.getAttribute("data-src") || "";
+          pushRow({
+            itemId: cleanId,
+            title,
+            priceText,
+            caption,
+            thumbUrl,
+            itemUrl: href,
+            pageUrl: pageUrlArg,
+          });
+        }
+
+        return Array.from(byId.values());
       },
       url,
     );
@@ -215,8 +257,10 @@ async function main() {
       await incrementBudget(pool, day, market);
 
       if (rows.length === 0) {
-        await setCrawlPage(pool, market, SEED_KEY, 0);
-        await logEvent(pool, market, "empty_page_reset", { pageNum, pageUrl });
+        // Advance pagination — resetting to 0 caused infinite retries on the same SERP.
+        const next = pageNum + 1;
+        await setCrawlPage(pool, market, SEED_KEY, next > 400 ? 0 : next);
+        await logEvent(pool, market, "empty_page", { pageNum, nextPage: next > 400 ? 0 : next, pageUrl });
       } else {
         await setCrawlPage(pool, market, SEED_KEY, pageNum + 1);
       }

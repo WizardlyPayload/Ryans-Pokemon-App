@@ -1,0 +1,4 @@
+# Root compose so Coolify (repo root) finds a compose file.
+# Service definitions live in ebay-history-stack/; paths there stay relative to that folder.
+include:
+  - path: ebay-history-stack/docker-compose.yml

@@ -58,6 +58,12 @@ In **pokemon-card-desktop**, set **History API base URL** (e.g. `https://your-do
 
 You are responsible for complying with eBay’s terms and applicable law. This stack rate-limits and can be disabled with `CRAWLER_ENABLED=false`.
 
+## Crawler behaviour
+
+- Parses sold SERPs using **`div.s-card[data-listingid]`** (current eBay layout) and **`li.s-item`** (classic layout), deduped by item id.
+- **Empty SERP:** advances `_pgn` instead of resetting to page 0 (avoids spinning on the same URL). Wraps to page `0` after page `400`.
+- Docker image sets **`PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`** so the official Playwright image’s bundled Chromium is used (no duplicate browser download during `npm install`).
+
 ## Stop / reset
 
 ```bash
