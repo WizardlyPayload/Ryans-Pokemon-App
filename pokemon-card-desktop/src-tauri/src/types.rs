@@ -2,31 +2,62 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct SoldScrapeRow {
-    pub title: String,
-    pub price_display: String,
-    pub detail: String,
-    pub item_url: String,
-    pub thumbnail_url: Option<String>,
+pub struct ProductSummary {
+    pub id: String,
+    pub product_name: String,
+    pub console_name: String,
 }
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct TierBucket {
+pub struct ProductDetails {
+    pub id: String,
+    pub product_name: String,
+    pub console_name: String,
+    pub genre: Option<String>,
+    pub image_url: Option<String>,
+    pub pricecharting_search_url: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PcSoldOffer {
+    pub offer_id: String,
+    pub price_cents: i64,
+    pub sale_time: Option<String>,
+    pub condition_string: Option<String>,
+    pub include_string: Option<String>,
+    pub offer_url: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TierView {
     pub tier_key: String,
     pub label: String,
-    pub sold: Vec<SoldScrapeRow>,
-    pub section_note: Option<String>,
+    pub price_field: String,
+    pub price_cents: Option<i64>,
+    pub condition_id: Option<i32>,
+    pub sold: Vec<PcSoldOffer>,
+    pub sold_section_note: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct EbayListing {
+    pub title: String,
+    pub price_display: String,
+    pub condition: String,
+    pub image_url: Option<String>,
+    pub item_web_url: String,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MarketSnapshot {
-    pub query: String,
-    pub card_name: Option<String>,
-    pub card_image_url: Option<String>,
-    pub tiers: Vec<TierBucket>,
-    pub ebay_search_url: String,
+pub struct CardLoadout {
+    pub product: ProductDetails,
+    pub tiers: Vec<TierView>,
+    pub ebay_active: Vec<EbayListing>,
     pub warnings: Vec<String>,
 }
 

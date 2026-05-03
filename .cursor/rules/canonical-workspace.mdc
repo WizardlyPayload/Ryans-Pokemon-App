@@ -1,0 +1,12 @@
+---
+description: This repo lives on C — do not use Z drive copy
+alwaysApply: true
+---
+
+# Canonical project root
+
+This repository’s working copy is:
+
+`C:\Users\Graham\Documents\Ryans Pokemon App`
+
+Use only this tree for edits and terminal commands. Do not use `Z:\Ryans Pokemon App`.

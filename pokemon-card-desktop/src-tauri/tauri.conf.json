@@ -12,9 +12,9 @@
   "app": {
     "windows": [
       {
-        "title": "pokemon-card-desktop",
-        "width": 800,
-        "height": 600
+        "title": "Pokemon Card Search",
+        "width": 1024,
+        "height": 720
       }
     ],
     "security": {

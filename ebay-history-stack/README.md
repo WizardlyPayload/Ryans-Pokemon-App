@@ -2,6 +2,8 @@
 
 Playwright crawler + PostgreSQL + read-only JSON API. Designed for slow, sustained ingestion (~1000 pages/day configurable) with concurrent reads from your desktop app.
 
+**Full setup (desktop + server + Coolify)** is documented in [`../docs/SETUP.md`](../docs/SETUP.md).
+
 ## Prerequisites
 
 - Docker + Docker Compose v2

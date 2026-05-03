@@ -1,62 +1,78 @@
-mod ebay_scrape;
+mod ebay;
 mod history_api;
-mod pokemon_tcg;
-mod tier_classify;
+mod pricecharting;
 mod types;
 
-use ebay_scrape::EbaySiteConfig;
 use reqwest::Client;
-use types::{HistoryItemDetail, HistorySearchSnapshot, MarketSnapshot};
+use types::{CardLoadout, HistoryItemDetail, HistorySearchSnapshot, ProductSummary};
 
 pub struct HttpClient(pub Client);
 
 #[tauri::command]
-async fn search_card_market(
+async fn pc_search_products(
     query: String,
-    ebay_region: Option<String>,
-    ebay_host: Option<String>,
-    ebay_sacat: Option<String>,
     client: tauri::State<'_, HttpClient>,
-) -> Result<MarketSnapshot, String> {
-    let q = query.trim();
-    if q.is_empty() {
-        return Err("Enter a card name or search.".into());
-    }
+) -> Result<Vec<ProductSummary>, String> {
+    let token = pricecharting::pc_token()?;
+    pricecharting::search_products(&client.0, &token, &query).await
+}
 
-    let cfg = EbaySiteConfig::resolve(ebay_region, ebay_host, ebay_sacat);
+#[tauri::command]
+async fn load_card(
+    product_id: String,
+    client: tauri::State<'_, HttpClient>,
+) -> Result<CardLoadout, String> {
+    let pc_token = pricecharting::pc_token()?;
+    let product_json = pricecharting::fetch_product(&client.0, &pc_token, &product_id).await?;
+    let product = pricecharting::product_details_from_json(&product_json, &product_id);
 
     let mut warnings: Vec<String> = vec![];
 
-    let art = pokemon_tcg::fetch_card_art(&client.0, q).await;
-    let (card_image_url, card_name) = match art {
-        Some((img, name)) => (Some(img), Some(name)),
-        None => {
+    if let Some(ref g) = product.genre {
+        if !g.eq_ignore_ascii_case("Pokemon Card") {
+            warnings.push(format!(
+                "PriceCharting genre is \"{}\" — verify this is the Pokémon card you intended.",
+                g
+            ));
+        }
+    }
+
+    let tiers = pricecharting::build_tiers(&client.0, &pc_token, &product_id, &product_json).await?;
+
+    let ebay_active = match ebay::ebay_creds() {
+        Ok((cid, secret)) => match ebay::application_token(&client.0, &cid, &secret).await {
+            Ok(bearer) => {
+                let q = format!(
+                    "{} {}",
+                    product.product_name,
+                    product.console_name
+                );
+                match ebay::search_active_listings(&client.0, &bearer, &q.trim(), 15).await {
+                    Ok(rows) => rows,
+                    Err(e) => {
+                        warnings.push(format!("eBay active listings skipped: {e}"));
+                        vec![]
+                    }
+                }
+            }
+            Err(e) => {
+                warnings.push(format!("eBay OAuth failed: {e}"));
+                vec![]
+            }
+        },
+        Err(_) => {
             warnings.push(
-                "Optional: no artwork from pokemontcg.io (rate limit, no match, or network).".into(),
+                "eBay credentials missing — add EBAY_CLIENT_ID and EBAY_CLIENT_SECRET to .env for active listings."
+                    .to_string(),
             );
-            (None, None)
+            vec![]
         }
     };
 
-    warnings.push(format!(
-        "eBay site: {} (category filter _sacat={} on narrow attempt).",
-        cfg.host, cfg.sacat_narrow
-    ));
-
-    let rows = ebay_scrape::scrape_ebay_sold(&client.0, q, &cfg).await?;
-    let tiers = ebay_scrape::bucket_into_tiers(rows);
-
-    warnings.push(
-        "Scraped from eBay’s public sold search — not affiliated with eBay; HTML changes can break this. Tier buckets are keyword guesses from titles, not slab verification."
-            .into(),
-    );
-
-    Ok(MarketSnapshot {
-        query: q.to_string(),
-        card_name,
-        card_image_url,
+    Ok(CardLoadout {
+        product,
         tiers,
-        ebay_search_url: ebay_scrape::ebay_sold_search_url_for_snapshot(q, &cfg),
+        ebay_active,
         warnings,
     })
 }
@@ -83,17 +99,18 @@ async fn history_item_vps(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    dotenvy::dotenv().ok();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(HttpClient(
             Client::builder()
-                .cookie_store(true)
                 .use_rustls_tls()
                 .build()
                 .expect("reqwest client"),
         ))
         .invoke_handler(tauri::generate_handler![
-            search_card_market,
+            pc_search_products,
+            load_card,
             history_search_vps,
             history_item_vps,
         ])
