@@ -247,6 +247,7 @@ You are responsible for complying with **eBay’s terms**, rate limits, and appl
 | Server: crawler idle / errors | `docker compose logs crawler`; set `CRAWLER_ENABLED=true`; check DB connectivity. |
 | Server: `bot_wall` in logs | eBay is serving a block/challenge page; increase delays, reduce volume, or pause with `CRAWLER_ENABLED=false` until it clears. |
 | Windows: Docker build fails | Start **Docker Desktop** (Linux engine); the daemon must be running for `docker compose build`. |
-| Coolify: `open Dockerfile: no such file or directory` | The app was created as **Dockerfile**, not **Docker Compose**. Either recreate the resource as **Docker Compose from Git**, or keep a **`docker-compose.yml` at the repo root** (this repo includes `ebay-history-stack/docker-compose.yml` from the root file) **and** set Coolify to build from that compose file. |
+| Coolify: `open Dockerfile: no such file or directory` | Set **Build Pack** to **Docker Compose** (not Dockerfile). |
+| Coolify: “Please load a Compose file” / empty compose editor | **Docker Compose Location** must match the file **in Git** exactly (including **`.yaml` vs `.yml`**). This repo has **`docker-compose.yaml`** and **`docker-compose.yml`** at the root (same content). Use **`/docker-compose.yaml`** or **`/docker-compose.yml`** to match. Click **Show Deployable Compose** if Coolify can pull from Git. |
 
 For **Coolify-specific** routing or env injection, see [Coolify Docker Compose docs](https://coolify.io/docs/knowledge-base/docker/compose).
