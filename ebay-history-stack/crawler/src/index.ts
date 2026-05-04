@@ -20,11 +20,30 @@ const US_SHARE = Math.min(1, Math.max(0, Number(process.env.US_SHARE ?? 0.5)));
 const UK_SHARE = Math.min(1, Math.max(0, Number(process.env.UK_SHARE ?? 0.5)));
 const MIN_DELAY_MS = Math.max(1000, Number(process.env.MIN_DELAY_MS || 8000));
 const MAX_DELAY_MS = Math.max(MIN_DELAY_MS, Number(process.env.MAX_DELAY_MS || 45000));
+/** After bot_wall, wait longer before retry (eBay rate-limits / challenges datacenter headless). */
+const BOT_WALL_BACKOFF_MIN_MS = Math.max(
+  60_000,
+  Number(process.env.BOT_WALL_BACKOFF_MIN_MS || 180_000),
+);
+const BOT_WALL_BACKOFF_MAX_MS = Math.max(
+  BOT_WALL_BACKOFF_MIN_MS,
+  Number(process.env.BOT_WALL_BACKOFF_MAX_MS || 600_000),
+);
+const PAGE_ERR_BACKOFF_MIN_MS = 60_000;
+const PAGE_ERR_BACKOFF_MAX_MS = 180_000;
 const PARSE_VERSION = process.env.PARSE_VERSION || "1";
 const US_SEED = process.env.US_SEED_URL || "https://www.ebay.com/sch/i.html?_sacat=31392&LH_Sold=1&LH_Complete=1&_ipg=60&rt=nc";
 const UK_SEED = process.env.UK_SEED_URL || "https://www.ebay.co.uk/sch/i.html?_sacat=0&LH_Sold=1&LH_Complete=1&_ipg=60&rt=nc";
 
 const SEED_KEY = "category_sold";
+
+/** Reduces obvious automation signals (does not defeat serious bot checks). */
+function launchChromium() {
+  return chromium.launch({
+    headless: true,
+    args: ["--disable-blink-features=AutomationControlled"],
+  });
+}
 
 function botWall(html: string): boolean {
   const h = html.toLowerCase();
@@ -79,20 +98,25 @@ async function fetchOnePage(browser: Browser, market: Market, seedUrl: string, p
     locale: market === "uk" ? "en-GB" : "en-US",
     userAgent:
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    viewport: { width: 1280, height: 800 },
+    deviceScaleFactor: 1,
   });
   const page = await ctx.newPage();
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => false });
+  });
   const url = buildSearchUrl(seedUrl, pageNum);
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 120000 });
-    await page.waitForSelector("div.s-card[data-listingid], li.s-item", { timeout: 50000 }).catch(() => {});
-    await sleep(2500);
+    await page.waitForSelector("div.s-card[data-listingid]", { timeout: 45000 }).catch(() => {});
     const html = await page.content();
     if (botWall(html)) {
       throw new Error("bot_wall");
     }
     const rows = await page.evaluate(
       (pageUrlArg) => {
-        type Out = {
+        const cards = Array.from(document.querySelectorAll("div.s-card[data-listingid]"));
+        const out: Array<{
           itemId: string;
           title: string;
           priceText: string;
@@ -100,15 +124,7 @@ async function fetchOnePage(browser: Browser, market: Market, seedUrl: string, p
           thumbUrl: string;
           itemUrl: string;
           pageUrl: string;
-        };
-        const byId = new Map<string, Out>();
-
-        function pushRow(o: Out) {
-          if (!o.itemId || o.itemId.length < 10 || !o.itemUrl || o.title.length < 5) return;
-          if (!byId.has(o.itemId)) byId.set(o.itemId, o);
-        }
-
-        const cards = Array.from(document.querySelectorAll("div.s-card[data-listingid]"));
+        }> = [];
         for (const card of cards) {
           const listingId = card.getAttribute("data-listingid") || "";
           const links = Array.from(card.querySelectorAll('a.s-card__link[href*="/itm/"]'));
@@ -129,7 +145,8 @@ async function fetchOnePage(browser: Browser, market: Market, seedUrl: string, p
           const caption = cap?.textContent?.trim() || "";
           const thumbUrl = img?.getAttribute("src") || img?.getAttribute("data-src") || "";
           const cleanId = listingId.replace(/\D/g, "");
-          pushRow({
+          if (!cleanId || !href || title.length < 5) continue;
+          out.push({
             itemId: cleanId,
             title,
             priceText,
@@ -139,42 +156,7 @@ async function fetchOnePage(browser: Browser, market: Market, seedUrl: string, p
             pageUrl: pageUrlArg,
           });
         }
-
-        const items = Array.from(document.querySelectorAll("li.s-item"));
-        for (const li of items) {
-          const rawId =
-            li.getAttribute("data-listingid") ||
-            li.getAttribute("data-listing-id") ||
-            "";
-          let cleanId = rawId.replace(/\D/g, "");
-          const link = li.querySelector('a.s-item__link[href*="/itm/"]') as HTMLAnchorElement | null;
-          let href = link?.href ? link.href.split("?")[0] : "";
-          if (!cleanId && href) {
-            const m = href.match(/\/itm\/(\d{10,})/);
-            if (m) cleanId = m[1];
-          }
-          const titleEl = li.querySelector(".s-item__title span") || li.querySelector(".s-item__title");
-          let title = (titleEl?.textContent || "").replace(/\s+/g, " ").trim();
-          if (title.toLowerCase().includes("shop on ebay")) continue;
-          const priceEl = li.querySelector(".s-item__price");
-          const subEl = li.querySelector(".s-item__subtitle, .s-item__caption--dense");
-          const img = li.querySelector(".s-item__image-img") as HTMLImageElement | null;
-          if (!title && img) title = (img.getAttribute("alt") || "").trim();
-          const priceText = priceEl?.textContent?.trim() || "";
-          const caption = subEl?.textContent?.trim() || "";
-          const thumbUrl = img?.getAttribute("src") || img?.getAttribute("data-src") || "";
-          pushRow({
-            itemId: cleanId,
-            title,
-            priceText,
-            caption,
-            thumbUrl,
-            itemUrl: href,
-            pageUrl: pageUrlArg,
-          });
-        }
-
-        return Array.from(byId.values());
+        return out;
       },
       url,
     );
@@ -204,7 +186,7 @@ async function main() {
     }),
   );
 
-  let browser: Browser | null = await chromium.launch({ headless: true });
+  let browser: Browser | null = await launchChromium();
 
   const shutdown = async () => {
     if (browser) {
@@ -224,7 +206,7 @@ async function main() {
     }
 
     if (!browser) {
-      browser = await chromium.launch({ headless: true });
+      browser = await launchChromium();
     }
 
     const day = new Date().toISOString().slice(0, 10);
@@ -259,10 +241,8 @@ async function main() {
       await incrementBudget(pool, day, market);
 
       if (rows.length === 0) {
-        // Advance pagination — resetting to 0 caused infinite retries on the same SERP.
-        const next = pageNum + 1;
-        await setCrawlPage(pool, market, SEED_KEY, next > 400 ? 0 : next);
-        await logEvent(pool, market, "empty_page", { pageNum, nextPage: next > 400 ? 0 : next, pageUrl });
+        await setCrawlPage(pool, market, SEED_KEY, 0);
+        await logEvent(pool, market, "empty_page_reset", { pageNum, pageUrl });
       } else {
         await setCrawlPage(pool, market, SEED_KEY, pageNum + 1);
       }
@@ -283,9 +263,15 @@ async function main() {
       console.error(JSON.stringify({ msg: "page_error", market, error: err }));
       if (err.includes("browser") || err.includes("Target closed")) {
         await browser.close();
-        browser = await chromium.launch({ headless: true });
+        browser = await launchChromium();
       }
-      await sleep(randBetween(60_000, 180_000));
+      const isBotWall = err === "bot_wall";
+      await sleep(
+        randBetween(
+          isBotWall ? BOT_WALL_BACKOFF_MIN_MS : PAGE_ERR_BACKOFF_MIN_MS,
+          isBotWall ? BOT_WALL_BACKOFF_MAX_MS : PAGE_ERR_BACKOFF_MAX_MS,
+        ),
+      );
     }
 
     await sleep(randBetween(MIN_DELAY_MS, MAX_DELAY_MS));
