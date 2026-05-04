@@ -1,5 +1,6 @@
 # Full stack at repo root (Coolify-compatible — no `include`, explicit services).
 # Paths are relative to this file's directory.
+
 services:
   postgres:
     image: postgres:16-alpine

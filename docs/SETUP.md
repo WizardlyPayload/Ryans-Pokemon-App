@@ -1,14 +1,5 @@
 # Setup & usage guide
 
-**Use the copy on your C: drive as the project root in Cursor:**  
-`C:\Users\Graham\Documents\Ryans Pokemon App`  
-
-If your editor was pointed at a `Z:` (or other mapped) folder, use **File → Open Folder** and choose this path so installs and builds run on local NTFS (avoids permission issues with `node_modules`).
-
-A **global Cursor rule** (`~/.cursor/rules/no-z-ryans-pokemon-app.mdc`) tells the agent to use this **C:** folder only, not `Z:\Ryans Pokemon App`. Chats are still tied to whichever folder you have open—open this path for new work so history and tools line up.
-
----
-
 This repo has two parts:
 
 | Part | Purpose |
@@ -136,6 +127,23 @@ Set at minimum:
 
 Optional tuning: `GLOBAL_PAGES_PER_DAY`, `US_SHARE`, `UK_SHARE`, delays, `CRAWLER_ENABLED`, seed URLs (see `.env.example`).
 
+#### Route the crawler through your home IP (Tailscale)
+
+eBay often blocks **datacenter / VPS** addresses. You can make **Playwright’s** outbound traffic look like it comes from **home** by putting your home PC and the server on the same **Tailscale** network, then using one of these patterns:
+
+| Approach | What it does | Best when |
+|----------|----------------|-----------|
+| **Exit node** | On the **VPS**, run Tailscale and `tailscale up --exit-node=<your-home-machine>`. The whole server’s default egress goes via home (Docker NAT usually follows). | You’re OK routing **all** server internet through home; simplest mentally. |
+| **HTTP/SOCKS proxy at home** | On your **home PC** (on Tailscale), run a small proxy bound to your Tailscale IP (`100.x.y.z`), e.g. tinyproxy or a SOCKS listener. On Coolify, set **`CRAWLER_PROXY_SERVER`** (and optional **`CRAWLER_PROXY_USER`** / **`CRAWLER_PROXY_PASS`**) to `http://100.x.y.z:PORT` or `socks5://100.x.y.z:PORT`. | You want **only** the crawler to use home bandwidth; API/Postgres egress stays on the VPS. |
+
+Details:
+
+1. **Exit node** — On the home machine: enable advertising as an exit node (`tailscale set --advertise-exit-node`) and approve it in the [Tailscale admin console](https://login.tailscale.com/). On the VPS: install Tailscale, then `tailscale up --exit-node=<HomeHostname>`. Confirm from the VPS with `curl -s https://ifconfig.me` (should match your **home** public IP when the exit node is active).
+
+2. **Proxy + Tailscale IP** — Join VPS and home to the same tailnet. Find home’s Tailscale IP (`tailscale ip -4` on home). Run a proxy **only on that IP** if you don’t want it on the public internet. Point **`CRAWLER_PROXY_SERVER`** at it; the crawler logs `"proxyConfigured": true` on startup.
+
+Tailscale stays **on the host or home PC** — there is no extra Tailscale service in **`docker-compose.yaml`** so you only run **postgres + api + crawler** in Compose.
+
 ### Run with Docker Compose (plain VPS)
 
 ```bash
@@ -151,82 +159,20 @@ docker compose logs -f crawler
 docker compose logs -f api
 ```
 
-**Crawler logs (JSON lines):** look for `page_ok` (parsed count, `inserted`), `empty_page` (no listings parsed — layout or end of results), `page_error` (often `bot_wall` if eBay serves a challenge). The worker alternates **US / UK** up to the per-day caps in `crawl_budget_daily`.
-
-**Local sanity check (optional):** start Docker Desktop, then from `ebay-history-stack` run `docker compose build crawler` and `docker compose up -d` to confirm images build.
-
 Put **HTTPS** in front (Caddy, nginx, or your host’s proxy) before exposing to the internet. Prefer **not** publishing Postgres (`5432`) publicly.
 
 More detail: **`ebay-history-stack/README.md`**.
 
-### Run on Coolify (what actually happens)
+### Run on Coolify
 
-Coolify’s UI wording changes between versions, but the **idea is always the same**:
+1. Push **`ebay-history-stack`** (or the whole repo) to Git.
+2. **New resource → Docker Compose** (or **Service Stack**, depending on version).
+3. Select the repo and set the **base directory** to the folder that contains **`docker-compose.yml`** if it is not the repo root.
+4. In **Environment variables**, set **`POSTGRES_PASSWORD`**, **`API_KEY`**, and any optional vars referenced in `docker-compose.yml`.
+5. Assign a **domain** to the **`api`** service, routed to container port **3001**.
+6. Deploy, then test `/health` and `/v1/search` over **HTTPS** with the Bearer token.
 
-1. You give Coolify a **Git repo** that contains **`docker-compose.yml`** (our stack defines **`postgres`**, **`api`**, **`crawler`**).
-2. Coolify **builds and starts** those three services on your server.
-3. You fill in **environment variables** Coolify discovers from the compose file (`POSTGRES_PASSWORD`, `API_KEY`, etc.).
-4. You attach a **domain** so the outside world can reach **only the `api` service** on **container port `3001`** (Postgres and the crawler stay internal).
-
-You are **not** looking for a generic “Dockerfile app” — you want a deployment type that is explicitly **Docker Compose** / **from Compose file** / **repository + compose** (exact label depends on your Coolify version).
-
-Official reference: [Coolify — Docker Compose](https://coolify.io/docs/knowledge-base/docker/compose).
-
-#### 1. Git
-
-Push code so that **`docker-compose.yml`** exists on the branch you deploy.  
-If that file is **not** at the repo root, Coolify will ask for a **base directory** / **root path** — set it to the folder that **contains** `docker-compose.yml` (e.g. `ebay-history-stack`).
-
-#### 2. Create the deployment in Coolify
-
-Use whatever your sidebar shows that means **new deployment from Git using Docker Compose**, for example:
-
-- **\+ New resource** → choose **Docker Compose**, **Compose**, or **Docker Compose (Git)**  
-- or **Project** → **Add** → **Docker Compose**  
-- or **Services** → **New** → compose-based option  
-
-Then: **connect Git** → pick **repository + branch** → set **base directory** if needed → save.
-
-If you only see **Dockerfile** / **Nixpacks** / **Static** and no compose option, you’re in the wrong flow — go back and pick **Docker Compose**.
-
-#### 3. Environment variables
-
-Open this resource’s **Environment variables** / **Configuration** (names vary). Coolify lists variables that appear in `docker-compose.yml` as `${…}`.
-
-Set at least:
-
-| Name | Purpose |
-|------|--------|
-| **`POSTGRES_PASSWORD`** | DB password (used by Postgres + `DATABASE_URL` for `api` and `crawler`). |
-| **`API_KEY`** | Secret for `Authorization: Bearer …` from the desktop app. |
-
-Save. Optional: `GLOBAL_PAGES_PER_DAY`, `CRAWLER_ENABLED`, delays, etc. (see **`ebay-history-stack/.env.example`**).
-
-#### 4. Domain → **only** the `api` service, port **3001**
-
-Per [Coolify docs](https://coolify.io/docs/knowledge-base/docker/compose): after the compose file loads, Coolify shows **services**. Use the **Domains** (or equivalent) section for the **`api`** service.
-
-- Our API listens on **port `3001` inside the container** (not 80).  
-- In the domain UI, if Coolify asks for a **port** or shows `https://hostname:3000`-style hints, that **`:3001`** tells the proxy **which container port** to use; visitors still use normal **HTTPS** on 443.
-
-You **do not** put a public domain on **`postgres`** or **`crawler`**. The crawler has **no HTTP port** — check **Logs** for the `crawler` service.
-
-#### 5. Deploy
-
-**Deploy** / **Redeploy** and wait (first build compiles **api** + **crawler** images; can take a while). Then:
-
-```bash
-curl -s https://YOUR_HOST/health
-curl -s -H "Authorization: Bearer YOUR_API_KEY" "https://YOUR_HOST/v1/search?q=pikachu"
-```
-
-#### 6. Desktop app
-
-**API base URL** = `https://YOUR_HOST` (no `/v1`). **API key** = **`API_KEY`**.
-
-#### 7. Pause scraping only
-
-Set **`CRAWLER_ENABLED=false`** in env → save → redeploy. API + DB keep running.
+Use the Coolify **HTTPS URL** (origin only, no path) plus **`API_KEY`** in the desktop app.
 
 ---
 
@@ -245,10 +191,6 @@ You are responsible for complying with **eBay’s terms**, rate limits, and appl
 | Desktop: VPS history 401 | **`API_KEY`** in app must match server **`API_KEY`** exactly. |
 | Desktop: VPS connection errors | Confirm URL is reachable (HTTPS), firewall allows traffic, API container is up. |
 | Server: crawler idle / errors | `docker compose logs crawler`; set `CRAWLER_ENABLED=true`; check DB connectivity. |
-| Server: `bot_wall` in logs | eBay is serving a block/challenge page; increase delays, reduce volume, or pause with `CRAWLER_ENABLED=false` until it clears. |
-| Windows: Docker build fails | Start **Docker Desktop** (Linux engine); the daemon must be running for `docker compose build`. |
-| Coolify: `open Dockerfile: no such file or directory` | Set **Build Pack** to **Docker Compose** (not Dockerfile). |
-| Coolify: “Please load a Compose file” / empty compose editor | **Docker Compose Location** must match the file **in Git** exactly (including **`.yaml` vs `.yml`**). Use **`/docker-compose.yaml`** or **`/docker-compose.yml`** at repo root. Click **Show Deployable Compose** after Git pull. |
-| Coolify: `no service selected` | Often caused by a compose file that only uses **`include:`** without top-level **`services:`** (Coolify’s merge step may not see services). This repo’s root **`docker-compose.yaml`** defines **`postgres`**, **`api`**, and **`crawler`** explicitly. Commit that file and redeploy. |
+| Server: crawler `bot_wall` from VPS IP | Use **Tailscale exit node** or **`CRAWLER_PROXY_*`** to home (see *Route the crawler through your home IP* above). Lower `GLOBAL_PAGES_PER_DAY` and raise delays. |
 
 For **Coolify-specific** routing or env injection, see [Coolify Docker Compose docs](https://coolify.io/docs/knowledge-base/docker/compose).

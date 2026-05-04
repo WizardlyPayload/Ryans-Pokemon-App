@@ -1,5 +1,14 @@
-import type { Browser, Page } from "playwright";
-import { chromium } from "playwright";
+import type { Browser } from "playwright";
+import { chromium } from "playwright-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
+import {
+  addExtraInitScript,
+  humanHoverSomeCards,
+  humanPointerWander,
+  humanReadingPause,
+  humanScrollResults,
+  humanSkimHome,
+} from "./human.js";
 import {
   createPool,
   ensureSchema,
@@ -12,6 +21,8 @@ import {
   logEvent,
   type Market,
 } from "./db.js";
+
+chromium.use(StealthPlugin());
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const CRAWLER_ENABLED = (process.env.CRAWLER_ENABLED || "true").toLowerCase() === "true";
@@ -41,7 +52,10 @@ const SEED_KEY = "category_sold";
 const PRE_NAV_MIN_MS = Math.max(0, Number(process.env.PRE_NAV_MIN_MS ?? 1200));
 const PRE_NAV_MAX_MS = Math.max(PRE_NAV_MIN_MS, Number(process.env.PRE_NAV_MAX_MS ?? 5000));
 
-/** Reduces obvious automation signals (does not defeat serious bot checks). */
+/** Load ebay.co.uk / ebay.com first so the search request has same-site cookies + referrer chain (toggle off if too slow). */
+const WARMUP_EBAY_HOME = (process.env.WARMUP_EBAY_HOME || "true").toLowerCase() === "true";
+
+/** Launched browser: bundled Chromium + stealth plugin + non-default window args. */
 function launchChromium() {
   return chromium.launch({
     headless: true,
@@ -49,6 +63,10 @@ function launchChromium() {
       "--disable-blink-features=AutomationControlled",
       "--no-sandbox",
       "--disable-dev-shm-usage",
+      "--disable-background-networking",
+      "--disable-renderer-backgrounding",
+      "--disable-backgrounding-occluded-windows",
+      "--window-size=1280,800",
     ],
   });
 }
@@ -70,9 +88,24 @@ function chromeUserAgent(): string {
   return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${v}.0.0.0 Safari/537.36`;
 }
 
+function proxyForPlaywright():
+  | { server: string; username?: string; password?: string }
+  | undefined {
+  const server = process.env.CRAWLER_PROXY_SERVER?.trim();
+  if (!server) return undefined;
+  const username = process.env.CRAWLER_PROXY_USER?.trim();
+  const password = process.env.CRAWLER_PROXY_PASS?.trim();
+  const p: { server: string; username?: string; password?: string } = { server };
+  if (username) p.username = username;
+  if (password) p.password = password;
+  return p;
+}
+
 function newContextOptions(market: Market) {
   const viewport = pickViewport();
+  const proxy = proxyForPlaywright();
   return {
+    ...(proxy ? { proxy } : {}),
     locale: market === "uk" ? "en-GB" : "en-US",
     timezoneId: market === "uk" ? "Europe/London" : "America/Chicago",
     userAgent: chromeUserAgent(),
@@ -89,30 +122,27 @@ function newContextOptions(market: Market) {
       Accept:
         "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
       "Upgrade-Insecure-Requests": "1",
+      DNT: "1",
     },
   };
 }
 
-/** Mouse moves + incremental scroll before scraping DOM (Lazy-loaded grids often need scroll). */
-async function behaveLikeHumanReader(page: Page): Promise<void> {
-  const size = page.viewportSize();
-  const w = size?.width ?? 1280;
-  const h = size?.height ?? 800;
-  const x = randBetween(120, Math.max(121, w - 40));
-  const y = randBetween(120, Math.max(121, h - 40));
-  await page.mouse.move(x, y, { steps: randBetween(12, 28) });
-  await sleep(randBetween(180, 900));
+function ebayHomeOrigin(market: Market): string {
+  return market === "uk" ? "https://www.ebay.co.uk/" : "https://www.ebay.com/";
+}
 
-  const waves = randBetween(2, 5);
-  for (let i = 0; i < waves; i++) {
-    await page.mouse.wheel(0, randBetween(140, 520));
-    await sleep(randBetween(200, 750));
-    if (randBetween(0, 4) === 0) {
-      await page.mouse.move(randBetween(80, w - 80), randBetween(80, h - 80), { steps: randBetween(6, 18) });
-      await sleep(randBetween(100, 400));
-    }
+/** Visit marketplace home before search (cookies + natural entry path). */
+async function warmupEbayHome(page: import("playwright").Page, market: Market): Promise<void> {
+  await page.goto(ebayHomeOrigin(market), {
+    waitUntil: Math.random() < 0.3 ? "load" : "domcontentloaded",
+    timeout: 90_000,
+  });
+  const homeHtml = await page.content();
+  if (botWall(homeHtml)) {
+    throw new Error("bot_wall");
   }
-  await sleep(randBetween(350, 1400));
+  await sleep(randBetween(1500, 4500));
+  await humanSkimHome(page);
 }
 
 function botWall(html: string): boolean {
@@ -169,16 +199,26 @@ type Row = {
 async function fetchOnePage(browser: Browser, market: Market, seedUrl: string, pageNum: number): Promise<{ url: string; rows: Row[] }> {
   const ctx = await browser.newContext(newContextOptions(market));
   const page = await ctx.newPage();
-  await page.addInitScript(() => {
-    Object.defineProperty(navigator, "webdriver", { get: () => false });
-  });
+  await addExtraInitScript(page);
   const url = buildSearchUrl(seedUrl, pageNum);
   try {
     await sleep(randBetween(PRE_NAV_MIN_MS, PRE_NAV_MAX_MS));
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 120000 });
-    await behaveLikeHumanReader(page);
-    await page.waitForSelector("div.s-card[data-listingid]", { timeout: 45000 }).catch(() => {});
-    await sleep(randBetween(200, 800));
+    if (WARMUP_EBAY_HOME) {
+      await warmupEbayHome(page, market);
+    } else {
+      await humanPointerWander(page);
+      await sleep(randBetween(400, 1200));
+    }
+    await page.goto(url, {
+      waitUntil: Math.random() < 0.35 ? "load" : "domcontentloaded",
+      timeout: 120_000,
+      referer: WARMUP_EBAY_HOME ? ebayHomeOrigin(market) : undefined,
+    });
+    await humanScrollResults(page);
+    await page.waitForSelector("div.s-card[data-listingid]", { timeout: 50_000 }).catch(() => {});
+    await humanHoverSomeCards(page);
+    await humanReadingPause();
+    await sleep(randBetween(300, 1200));
     const html = await page.content();
     if (botWall(html)) {
       throw new Error("bot_wall");
@@ -253,6 +293,9 @@ async function main() {
       globalPagesPerDay: GLOBAL_PAGES_PER_DAY,
       caps,
       crawlerEnabled: CRAWLER_ENABLED,
+      warmupEbayHome: WARMUP_EBAY_HOME,
+      proxyConfigured: Boolean(proxyForPlaywright()),
+      humanBehavior: "stealth_plugin+home_warmup+scroll_hover_read",
     }),
   );
 
