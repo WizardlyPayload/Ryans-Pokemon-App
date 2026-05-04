@@ -19,10 +19,13 @@ services:
       timeout: 5s
       retries: 5
 
+  # initdb.d only runs on brand-new volumes. API + crawler run idempotent 001_init.sql on startup
+  # (see ensureSchema) so existing volumes get tables without a separate migrate container.
+
   api:
     build:
-      context: ./ebay-history-stack/api
-      dockerfile: Dockerfile
+      context: ./ebay-history-stack
+      dockerfile: api/Dockerfile
     restart: unless-stopped
     depends_on:
       postgres:
@@ -36,8 +39,8 @@ services:
 
   crawler:
     build:
-      context: ./ebay-history-stack/crawler
-      dockerfile: Dockerfile
+      context: ./ebay-history-stack
+      dockerfile: crawler/Dockerfile
     restart: unless-stopped
     depends_on:
       postgres:

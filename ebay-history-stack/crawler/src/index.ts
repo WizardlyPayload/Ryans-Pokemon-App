@@ -2,6 +2,7 @@ import type { Browser } from "playwright";
 import { chromium } from "playwright";
 import {
   createPool,
+  ensureSchema,
   incrementBudget,
   getBudget,
   ensureBudgetRow,
@@ -190,6 +191,7 @@ async function main() {
   }
 
   const pool = createPool(DATABASE_URL);
+  await ensureSchema(pool);
   const caps = capsForDay();
   let lastMarket: Market = "uk";
 

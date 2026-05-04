@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import pg from "pg";
+import { ensureSchema } from "./schema.js";
 
 const { Pool } = pg;
 
@@ -102,6 +103,7 @@ app.get<{ Params: { id: string } }>("/v1/item/:id/history", async (request, repl
 });
 
 async function main() {
+  await ensureSchema(pool);
   await app.listen({ host: "0.0.0.0", port: PORT });
 }
 

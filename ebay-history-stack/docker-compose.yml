@@ -17,10 +17,12 @@ services:
       timeout: 5s
       retries: 5
 
+  # API + crawler apply migrations/001_init.sql on startup (ensureSchema); initdb.d still helps fresh volumes.
+
   api:
     build:
-      context: ./api
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: api/Dockerfile
     restart: unless-stopped
     depends_on:
       postgres:
@@ -34,8 +36,8 @@ services:
 
   crawler:
     build:
-      context: ./crawler
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: crawler/Dockerfile
     restart: unless-stopped
     depends_on:
       postgres:

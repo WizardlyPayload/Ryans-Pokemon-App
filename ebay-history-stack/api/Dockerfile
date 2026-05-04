@@ -1,14 +1,15 @@
 FROM node:22-alpine AS build
 WORKDIR /app
-COPY package.json ./
+COPY api/package.json ./
 RUN npm install
-COPY tsconfig.json ./
-COPY src ./src
+COPY api/tsconfig.json ./
+COPY api/src ./src
 RUN npx tsc
 
 FROM node:22-alpine
 WORKDIR /app
-COPY package.json ./
+COPY api/package.json ./
 RUN npm install --omit=dev
 COPY --from=build /app/dist ./dist
+COPY migrations/001_init.sql /app/migrations/001_init.sql
 CMD ["node", "dist/index.js"]
