@@ -1,4 +1,4 @@
-import type { Browser } from "playwright";
+import type { Browser, Page } from "playwright";
 import { chromium } from "playwright";
 import {
   createPool,
@@ -37,12 +37,82 @@ const UK_SEED = process.env.UK_SEED_URL || "https://www.ebay.co.uk/sch/i.html?_s
 
 const SEED_KEY = "category_sold";
 
+/** Optional pauses so navigation does not look instant (ms). */
+const PRE_NAV_MIN_MS = Math.max(0, Number(process.env.PRE_NAV_MIN_MS ?? 1200));
+const PRE_NAV_MAX_MS = Math.max(PRE_NAV_MIN_MS, Number(process.env.PRE_NAV_MAX_MS ?? 5000));
+
 /** Reduces obvious automation signals (does not defeat serious bot checks). */
 function launchChromium() {
   return chromium.launch({
     headless: true,
-    args: ["--disable-blink-features=AutomationControlled"],
+    args: [
+      "--disable-blink-features=AutomationControlled",
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+    ],
   });
+}
+
+function pickViewport(): { width: number; height: number } {
+  const presets = [
+    { width: 1920, height: 1080 },
+    { width: 1536, height: 864 },
+    { width: 1440, height: 900 },
+    { width: 1366, height: 768 },
+    { width: 1280, height: 800 },
+  ];
+  const p = presets[randBetween(0, presets.length - 1)]!;
+  return { width: p.width + randBetween(-32, 32), height: p.height + randBetween(-32, 32) };
+}
+
+function chromeUserAgent(): string {
+  const v = [131, 132, 133][randBetween(0, 2)]!;
+  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${v}.0.0.0 Safari/537.36`;
+}
+
+function newContextOptions(market: Market) {
+  const viewport = pickViewport();
+  return {
+    locale: market === "uk" ? "en-GB" : "en-US",
+    timezoneId: market === "uk" ? "Europe/London" : "America/Chicago",
+    userAgent: chromeUserAgent(),
+    viewport,
+    screen: { width: viewport.width, height: viewport.height },
+    deviceScaleFactor: 1,
+    hasTouch: false,
+    isMobile: false,
+    colorScheme: "light" as const,
+    reducedMotion: "no-preference" as const,
+    // Match a typical browser document request; do not set Sec-Fetch-* (Chromium sets them per request).
+    extraHTTPHeaders: {
+      "Accept-Language": market === "uk" ? "en-GB,en;q=0.9" : "en-US,en;q=0.9",
+      Accept:
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+      "Upgrade-Insecure-Requests": "1",
+    },
+  };
+}
+
+/** Mouse moves + incremental scroll before scraping DOM (Lazy-loaded grids often need scroll). */
+async function behaveLikeHumanReader(page: Page): Promise<void> {
+  const size = page.viewportSize();
+  const w = size?.width ?? 1280;
+  const h = size?.height ?? 800;
+  const x = randBetween(120, Math.max(121, w - 40));
+  const y = randBetween(120, Math.max(121, h - 40));
+  await page.mouse.move(x, y, { steps: randBetween(12, 28) });
+  await sleep(randBetween(180, 900));
+
+  const waves = randBetween(2, 5);
+  for (let i = 0; i < waves; i++) {
+    await page.mouse.wheel(0, randBetween(140, 520));
+    await sleep(randBetween(200, 750));
+    if (randBetween(0, 4) === 0) {
+      await page.mouse.move(randBetween(80, w - 80), randBetween(80, h - 80), { steps: randBetween(6, 18) });
+      await sleep(randBetween(100, 400));
+    }
+  }
+  await sleep(randBetween(350, 1400));
 }
 
 function botWall(html: string): boolean {
@@ -69,9 +139,12 @@ function capsForDay(): { us: number; uk: number } {
   const sum = US_SHARE + UK_SHARE;
   const usRatio = sum > 0 ? US_SHARE / sum : 0.5;
   const ukRatio = sum > 0 ? UK_SHARE / sum : 0.5;
+  const rawUs = Math.floor(GLOBAL_PAGES_PER_DAY * usRatio);
+  const rawUk = Math.floor(GLOBAL_PAGES_PER_DAY * ukRatio);
+  // Allow 0 pages when share is 0 (otherwise US_SHARE=0 still forced Math.max(1,0)=1 US hit/day → bot_wall).
   return {
-    us: Math.max(1, Math.floor(GLOBAL_PAGES_PER_DAY * usRatio)),
-    uk: Math.max(1, Math.floor(GLOBAL_PAGES_PER_DAY * ukRatio)),
+    us: US_SHARE <= 0 ? 0 : Math.max(1, rawUs),
+    uk: UK_SHARE <= 0 ? 0 : Math.max(1, rawUk),
   };
 }
 
@@ -94,21 +167,18 @@ type Row = {
 };
 
 async function fetchOnePage(browser: Browser, market: Market, seedUrl: string, pageNum: number): Promise<{ url: string; rows: Row[] }> {
-  const ctx = await browser.newContext({
-    locale: market === "uk" ? "en-GB" : "en-US",
-    userAgent:
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    viewport: { width: 1280, height: 800 },
-    deviceScaleFactor: 1,
-  });
+  const ctx = await browser.newContext(newContextOptions(market));
   const page = await ctx.newPage();
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "webdriver", { get: () => false });
   });
   const url = buildSearchUrl(seedUrl, pageNum);
   try {
+    await sleep(randBetween(PRE_NAV_MIN_MS, PRE_NAV_MAX_MS));
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 120000 });
+    await behaveLikeHumanReader(page);
     await page.waitForSelector("div.s-card[data-listingid]", { timeout: 45000 }).catch(() => {});
+    await sleep(randBetween(200, 800));
     const html = await page.content();
     if (botWall(html)) {
       throw new Error("bot_wall");
