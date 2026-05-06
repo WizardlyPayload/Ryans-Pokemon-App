@@ -221,6 +221,20 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/** Chromium/renderer died — must launch a fresh browser or every action fails. */
+function shouldRelaunchBrowser(err: string): boolean {
+  const e = err.toLowerCase();
+  return (
+    e.includes("target crashed") ||
+    e.includes("target closed") ||
+    e.includes("browser has been closed") ||
+    e.includes("browser closed") ||
+    e.includes("session closed") ||
+    e.includes("protocol error: browser") ||
+    e.includes("connection closed")
+  );
+}
+
 function randBetween(a: number, b: number): number {
   return a + Math.floor(Math.random() * (b - a + 1));
 }
@@ -497,8 +511,13 @@ async function main() {
       const err = e instanceof Error ? e.message : String(e);
       await logEvent(pool, market, "page_error", { pageNum, error: err });
       console.error(JSON.stringify({ msg: "page_error", market, error: err }));
-      if (err.includes("browser") || err.includes("Target closed")) {
-        await browser.close();
+      if (browser && shouldRelaunchBrowser(err)) {
+        console.log(JSON.stringify({ msg: "browser_relaunch", reason: err.slice(0, 300) }));
+        try {
+          await browser.close();
+        } catch {
+          /* ignore close errors on dead browser */
+        }
         browser = await launchChromium();
       }
       const isBotWall = err === "bot_wall";
