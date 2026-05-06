@@ -1,4 +1,4 @@
-import type { Browser, BrowserContext } from "playwright";
+import type { Browser, BrowserContext, Page } from "playwright";
 import { chromium } from "playwright-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import {
@@ -73,6 +73,8 @@ const ITEM_PRICE_ENRICH = (process.env.ITEM_PRICE_ENRICH || "true").toLowerCase(
 const ITEM_PRICE_ENRICH_MAX = Math.max(0, Number(process.env.ITEM_PRICE_ENRICH_MAX || "0"));
 const ITEM_NAV_MIN_MS = Math.max(50, Number(process.env.ITEM_NAV_MIN_MS ?? 400));
 const ITEM_NAV_MAX_MS = Math.max(ITEM_NAV_MIN_MS, Number(process.env.ITEM_NAV_MAX_MS ?? 1400));
+/** When DOM/meta still has no price, screenshot price region (or viewport) and OCR (slow). */
+const ITEM_PRICE_OCR = (process.env.ITEM_PRICE_OCR || "true").toLowerCase() === "true";
 
 /** Launched browser: bundled Chromium + stealth plugin + non-default window args. */
 function launchChromium() {
@@ -267,13 +269,128 @@ type ParseDiag = {
   itmLinks: number;
 };
 
+async function extractPriceFromItemDom(pricePage: Page): Promise<string> {
+  return pricePage.evaluate(() => {
+    function norm(s: string): string {
+      return s.replace(/\s+/g, " ").trim();
+    }
+    const ogAmt = document.querySelector('meta[property="og:price:amount"]')?.getAttribute("content")?.trim();
+    const ogCur =
+      document.querySelector('meta[property="og:price:currency"]')?.getAttribute("content")?.trim() || "";
+    if (ogAmt && /^[\d.,]+$/.test(ogAmt)) {
+      if (ogCur === "GBP") return `£${ogAmt}`;
+      if (ogCur === "USD") return `$${ogAmt}`;
+      if (ogCur === "EUR") return `€${ogAmt}`;
+      if (ogCur) return `${ogAmt} ${ogCur}`;
+      return ogAmt;
+    }
+    const ip = document.querySelector('[itemprop="price"]');
+    const ic = ip?.getAttribute("content")?.trim();
+    if (ic && /[\d.]/.test(ic)) return ic;
+    const ipText = norm(ip?.textContent || "");
+    if (ipText.length > 0 && ipText.length < 80 && /[\d£$€]/.test(ipText)) return ipText;
+    for (const sel of [
+      '[data-testid="x-price-primary"]',
+      ".x-price-primary span",
+      ".x-price-primary",
+      "#prcIsum",
+      ".vim.d-price",
+      ".vi-price",
+    ]) {
+      const el = document.querySelector(sel);
+      const t = norm(el?.textContent || "");
+      if (t.length > 0 && t.length < 120 && /[\d£$€.,]/.test(t)) return t;
+    }
+    const uk = norm(document.body?.innerText || "").match(/[\u00A3£]\s*[\d,]+(?:\.\d{1,2})?/);
+    if (uk) return uk[0].replace(/\s+/g, " ").trim();
+    const us = norm(document.body?.innerText || "").match(/\$\s*[\d,]+(?:\.\d{1,2})?/);
+    if (us) return us[0].trim();
+    return "";
+  });
+}
+
+/** OCR reads rendered pixels when DOM is empty or price is image/CSS-only. */
+async function extractPriceFromItemOcr(
+  page: Page,
+  worker: import("tesseract.js").Worker,
+  market: Market,
+): Promise<string> {
+  await page
+    .locator('[data-testid="x-price-primary"], .x-price-primary, .vim.d-price, #prcIsum, .vi-price')
+    .first()
+    .scrollIntoViewIfNeeded()
+    .catch(() => {});
+  await sleep(randBetween(250, 550));
+
+  const clip = await page.evaluate(() => {
+    const order = [
+      '[data-testid="x-price-primary"]',
+      ".x-price-primary",
+      ".vim.d-price",
+      "#prcIsum",
+      ".vi-price",
+    ];
+    for (const sel of order) {
+      const el = document.querySelector(sel);
+      if (el && el instanceof HTMLElement) {
+        const r = el.getBoundingClientRect();
+        const pad = 10;
+        if (r.width >= 14 && r.height >= 10 && r.bottom > 0 && r.right > 0) {
+          const x = Math.max(0, Math.floor(r.x - pad));
+          const y = Math.max(0, Math.floor(r.y - pad));
+          const w = Math.ceil(r.width + pad * 2);
+          const h = Math.ceil(r.height + pad * 2);
+          return { x, y, width: w, height: h };
+        }
+      }
+    }
+    return null;
+  });
+
+  const png = clip
+    ? await page.screenshot({ type: "png", clip })
+    : await page.screenshot({ type: "png", fullPage: false });
+
+  const {
+    data: { text },
+  } = await worker.recognize(png);
+
+  let blob = text.replace(/\s+/g, " ").trim();
+  blob = blob.replace(/^[Oo](?=\s*[\d,.])/g, "0");
+  if (market === "uk") blob = blob.replace(/^[Ll](?=\s*[\d,.])/g, "£");
+
+  const pick =
+    blob.match(/[\u00A3£]\s*[\d,]+(?:\.\d{1,2})?/) ||
+    blob.match(/\$\s*[\d,]+(?:\.\d{1,2})?/) ||
+    blob.match(/€\s*[\d,]+(?:\.\d{1,2})?/);
+  if (pick) return pick[0].replace(/\s+/g, " ").trim();
+
+  const naked = blob.match(/\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+\.\d{2}/);
+  if (naked && market === "uk") return `£${naked[0]}`;
+  if (naked && market === "us") return `$${naked[0]}`;
+
+  return "";
+}
+
 async function enrichMissingPricesFromItemPages(
   ctx: BrowserContext,
   rows: Row[],
   searchReferer: string,
-): Promise<{ enriched: number; attempted: number }> {
+  market: Market,
+): Promise<{ enriched: number; attempted: number; ocrFilled: number }> {
   let enriched = 0;
   let attempted = 0;
+  let ocrFilled = 0;
+
+  let ocrWorker: import("tesseract.js").Worker | null = null;
+  if (ITEM_PRICE_ENRICH && ITEM_PRICE_OCR) {
+    const { createWorker } = await import("tesseract.js");
+    ocrWorker = await createWorker("eng");
+    await ocrWorker.setParameters({
+      tessedit_char_whitelist: '£$€0123456789.,OoLlSs ',
+    });
+  }
+
   const pricePage = await ctx.newPage();
   await addExtraInitScript(pricePage);
   try {
@@ -287,44 +404,16 @@ async function enrichMissingPricesFromItemPages(
           timeout: 55_000,
           referer: searchReferer,
         });
-        await sleep(randBetween(200, 700));
-        const price = await pricePage.evaluate(() => {
-          function norm(s: string): string {
-            return s.replace(/\s+/g, " ").trim();
+        await pricePage.waitForLoadState("load").catch(() => {});
+        await sleep(randBetween(300, 900));
+        let price = await extractPriceFromItemDom(pricePage);
+        if (!price && ocrWorker) {
+          const ocr = await extractPriceFromItemOcr(pricePage, ocrWorker, market);
+          if (ocr) {
+            price = ocr;
+            ocrFilled++;
           }
-          const ogAmt = document.querySelector('meta[property="og:price:amount"]')?.getAttribute("content")?.trim();
-          const ogCur =
-            document.querySelector('meta[property="og:price:currency"]')?.getAttribute("content")?.trim() || "";
-          if (ogAmt && /^[\d.,]+$/.test(ogAmt)) {
-            if (ogCur === "GBP") return `£${ogAmt}`;
-            if (ogCur === "USD") return `$${ogAmt}`;
-            if (ogCur === "EUR") return `€${ogAmt}`;
-            if (ogCur) return `${ogAmt} ${ogCur}`;
-            return ogAmt;
-          }
-          const ip = document.querySelector('[itemprop="price"]');
-          const ic = ip?.getAttribute("content")?.trim();
-          if (ic && /[\d.]/.test(ic)) return ic;
-          const ipText = norm(ip?.textContent || "");
-          if (ipText.length > 0 && ipText.length < 80 && /[\d£$€]/.test(ipText)) return ipText;
-          for (const sel of [
-            '[data-testid="x-price-primary"]',
-            ".x-price-primary span",
-            ".x-price-primary",
-            "#prcIsum",
-            ".vim.d-price",
-            ".vi-price",
-          ]) {
-            const el = document.querySelector(sel);
-            const t = norm(el?.textContent || "");
-            if (t.length > 0 && t.length < 120 && /[\d£$€.,]/.test(t)) return t;
-          }
-          const uk = norm(document.body?.innerText || "").match(/[\u00A3£]\s*[\d,]+(?:\.\d{1,2})?/);
-          if (uk) return uk[0].replace(/\s+/g, " ").trim();
-          const us = norm(document.body?.innerText || "").match(/\$\s*[\d,]+(?:\.\d{1,2})?/);
-          if (us) return us[0].trim();
-          return "";
-        });
+        }
         if (price) {
           row.priceText = price;
           enriched++;
@@ -335,9 +424,14 @@ async function enrichMissingPricesFromItemPages(
       await sleep(randBetween(ITEM_NAV_MIN_MS, ITEM_NAV_MAX_MS));
     }
   } finally {
+    try {
+      await ocrWorker?.terminate();
+    } catch {
+      /* ignore */
+    }
     await pricePage.close();
   }
-  return { enriched, attempted };
+  return { enriched, attempted, ocrFilled };
 }
 
 async function fetchOnePage(
@@ -554,7 +648,7 @@ async function fetchOnePage(
 
     const missingPrices = rows.filter((r) => !r.priceText?.trim()).length;
     if (ITEM_PRICE_ENRICH && missingPrices > 0) {
-      const stats = await enrichMissingPricesFromItemPages(ctx, rows, loadedUrl);
+      const stats = await enrichMissingPricesFromItemPages(ctx, rows, loadedUrl, market);
       console.log(
         JSON.stringify({
           msg: "item_price_enrich_done",
@@ -562,6 +656,7 @@ async function fetchOnePage(
           missingBefore: missingPrices,
           enriched: stats.enriched,
           attempted: stats.attempted,
+          ocrFilled: stats.ocrFilled,
         }),
       );
     }
@@ -598,6 +693,7 @@ async function main() {
       ukSeedEnvHadSacat0,
       itemPriceEnrich: ITEM_PRICE_ENRICH,
       itemPriceEnrichMax: ITEM_PRICE_ENRICH_MAX,
+      itemPriceOcr: ITEM_PRICE_OCR,
     }),
   );
 

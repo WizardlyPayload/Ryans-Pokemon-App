@@ -57,6 +57,7 @@ services:
       ITEM_PRICE_ENRICH_MAX: ${ITEM_PRICE_ENRICH_MAX:-0}
       ITEM_NAV_MIN_MS: ${ITEM_NAV_MIN_MS:-400}
       ITEM_NAV_MAX_MS: ${ITEM_NAV_MAX_MS:-1400}
+      ITEM_PRICE_OCR: ${ITEM_PRICE_OCR:-true}
 
 volumes:
   postgres_data:
