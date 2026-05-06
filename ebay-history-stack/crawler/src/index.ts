@@ -45,9 +45,15 @@ const PAGE_ERR_BACKOFF_MAX_MS = 180_000;
 const PARSE_VERSION = process.env.PARSE_VERSION || "1";
 const US_SEED = process.env.US_SEED_URL || "https://www.ebay.com/sch/i.html?_sacat=31392&LH_Sold=1&LH_Complete=1&_ipg=60&rt=nc";
 // Do not use `_sacat=0` on UK — eBay redirects to `/b/0/` “Error page”. Keyword sold search is valid.
-const UK_SEED =
-  process.env.UK_SEED_URL ||
+const UK_SEED_DEFAULT =
   "https://www.ebay.co.uk/sch/i.html?_nkw=pokemon+card&LH_Sold=1&LH_Complete=1&_ipg=60&rt=nc";
+const ukSeedEnv = process.env.UK_SEED_URL;
+/** True when Coolify/compose still passed the broken sacat=0 URL — we substitute UK_SEED_DEFAULT. */
+const ukSeedEnvHadSacat0 =
+  Boolean(ukSeedEnv) &&
+  ukSeedEnv!.includes("ebay.co.uk") &&
+  (ukSeedEnv!.includes("_sacat=0") || ukSeedEnv!.includes("_sacat=0&"));
+const UK_SEED = ukSeedEnvHadSacat0 ? UK_SEED_DEFAULT : ukSeedEnv || UK_SEED_DEFAULT;
 
 const SEED_KEY = "category_sold";
 
@@ -383,6 +389,7 @@ async function main() {
       proxyConfigured: Boolean(proxyForPlaywright()),
       humanBehavior: "stealth_plugin+home_warmup+scroll_hover_read",
       badUkSacat0,
+      ukSeedEnvHadSacat0,
     }),
   );
 

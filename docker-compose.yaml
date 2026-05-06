@@ -1,6 +1,5 @@
 # Full stack at repo root (Coolify-compatible — no `include`, explicit services).
 # Paths are relative to this file's directory.
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -56,6 +55,7 @@ services:
       MAX_DELAY_MS: ${MAX_DELAY_MS:-45000}
       PARSE_VERSION: "1"
       US_SEED_URL: ${US_SEED_URL:-https://www.ebay.com/sch/i.html?_sacat=31392&LH_Sold=1&LH_Complete=1&_ipg=60&rt=nc}
+      # Never use _sacat=0 on ebay.co.uk — redirects to /b/0/ error page (must match docker-compose.yml).
       UK_SEED_URL: ${UK_SEED_URL:-https://www.ebay.co.uk/sch/i.html?_nkw=pokemon+card&LH_Sold=1&LH_Complete=1&_ipg=60&rt=nc}
 
 volumes:
