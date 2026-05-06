@@ -305,6 +305,37 @@ async function fetchOnePage(
     }
     const { rows, diag } = await page.evaluate(
       (pageUrlArg) => {
+        /** eBay links append screen-reader suffixes to anchor text. */
+        function cleanTitleText(t: string): string {
+          return t
+            .replace(/\s*Opens in a new window or tab\s*/gi, " ")
+            .replace(/\s*Opens in a new window\s*/gi, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+        }
+
+        /** Sold-search markup varies by locale; try several nodes that usually hold £ / $ / digits. */
+        function priceFromListingCard(card: Element): string {
+          const selectors = [
+            ".s-card__price",
+            ".s-item__price",
+            ".s-item__paid",
+            ".s-item__purchase-options .s-item__price",
+            "[class*='s-item__price']",
+            "[data-testid='s-item__price']",
+            "[data-testid*='price']",
+          ];
+          for (const sel of selectors) {
+            const el = card.querySelector(sel);
+            const t = (el?.textContent || "").replace(/\s+/g, " ").trim();
+            if (t && /[\d£$€.,]/.test(t) && t.length < 160) return t;
+          }
+          const vague = card.querySelector(".s-item__details [class*='price'], .s-item__detail [class*='price']");
+          const vt = (vague?.textContent || "").replace(/\s+/g, " ").trim();
+          if (vt && /[\d£$€]/.test(vt) && vt.length < 160) return vt;
+          return "";
+        }
+
         const out: Array<{
           itemId: string;
           title: string;
@@ -325,7 +356,7 @@ async function fetchOnePage(
           for (const a of links) {
             const el = a as HTMLAnchorElement;
             if (!href && el.href) href = el.href.split("?")[0];
-            const text = (el.textContent || "").trim();
+            const text = cleanTitleText((el.textContent || "").trim());
             if (text.length > 5 && !text.toLowerCase().startsWith("shop on ebay")) title = text;
           }
           if (!href) continue;
@@ -336,9 +367,9 @@ async function fetchOnePage(
           if (!cleanId || seen.has(cleanId)) continue;
 
           const img = card.querySelector("img");
-          if (!title && img) title = (img.getAttribute("alt") || "").trim();
-          const priceText =
-            card.querySelector(".s-card__price, .s-item__price")?.textContent?.trim() || "";
+          if (!title && img) title = cleanTitleText((img.getAttribute("alt") || "").trim());
+          else title = cleanTitleText(title);
+          const priceText = priceFromListingCard(card);
           const caption =
             card.querySelector(".s-card__caption, .s-item__subtitle")?.textContent?.trim() || "";
           const thumbUrl = img?.getAttribute("src") || img?.getAttribute("data-src") || "";
@@ -364,12 +395,14 @@ async function fetchOnePage(
             const cleanId = href.match(/\/itm\/(\d{8,})/)?.[1] || "";
             if (!cleanId || seen.has(cleanId)) continue;
             const root = a.closest("li, div, article") ?? document.body;
-            const title =
+            const title = cleanTitleText(
               (a.textContent || "").trim() ||
-              (root.querySelector("h1,h2,h3,[role='heading']")?.textContent || "").trim();
+                (root.querySelector("h1,h2,h3,[role='heading']")?.textContent || "").trim(),
+            );
             if (!title || title.length < 5) continue;
             const img = root.querySelector("img");
             const priceText =
+              priceFromListingCard(root) ||
               root.querySelector(".s-card__price, .s-item__price, [class*='price']")?.textContent?.trim() ||
               "";
             const caption =
