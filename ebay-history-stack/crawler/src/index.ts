@@ -151,7 +151,17 @@ async function warmupEbayHome(page: import("playwright").Page, market: Market): 
     throw new Error("bot_wall");
   }
   if (ebayErrorPage(homeHtml, page.url())) {
-    throw new Error("ebay_error_page");
+    // Datacenter IPs sometimes get the generic home error while `/sch/i.html` still works — do not abort the crawl.
+    console.log(
+      JSON.stringify({
+        msg: "warmup_home_error_page_skip",
+        market,
+        finalUrl: page.url(),
+        docTitle: ebayDocTitle(homeHtml).slice(0, 200),
+      }),
+    );
+    await sleep(randBetween(800, 2200));
+    return;
   }
   await sleep(randBetween(1500, 4500));
   await humanSkimHome(page);
@@ -167,12 +177,20 @@ function botWall(html: string): boolean {
   );
 }
 
-/** eBay “Error page” / invalid browse (e.g. `/b/0/` from bad `_sacat=0`). */
+function ebayDocTitle(html: string): string {
+  const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  return (m?.[1] ?? "").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * eBay “Error page | eBay” / invalid browse (e.g. `/b/0/` from bad `_sacat=0`).
+ * Use **document title only** — the full HTML often contains the words “error” in scripts/JSON and caused false positives.
+ */
 function ebayErrorPage(html: string, location: string): boolean {
-  const h = html.toLowerCase();
   const u = location.toLowerCase();
-  if (h.includes("error page | ebay") || (h.includes("error page") && h.includes("| ebay"))) return true;
   if (/\/b\/0\/?(\?|$)/.test(u)) return true;
+  const t = ebayDocTitle(html).toLowerCase();
+  if (t.includes("error page") && t.includes("ebay")) return true;
   return false;
 }
 
@@ -259,6 +277,16 @@ async function fetchOnePage(
       throw new Error("bot_wall");
     }
     if (ebayErrorPage(html, loadedUrl)) {
+      console.log(
+        JSON.stringify({
+          msg: "ebay_error_page_detected",
+          market,
+          phase: "search",
+          requestedUrl: url,
+          finalUrl: loadedUrl,
+          docTitle: ebayDocTitle(html).slice(0, 200),
+        }),
+      );
       throw new Error("ebay_error_page");
     }
     const { rows, diag } = await page.evaluate(
