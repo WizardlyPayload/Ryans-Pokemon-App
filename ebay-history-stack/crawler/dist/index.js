@@ -199,6 +199,17 @@ function shouldRelaunchBrowser(err) {
 function randBetween(a, b) {
     return a + Math.floor(Math.random() * (b - a + 1));
 }
+/** Remove listing suffix noise (e.g. `£10.76or Best Offer` → `£10.76`). */
+function normalizePriceText(raw) {
+    if (!raw?.trim())
+        return "";
+    let t = raw.replace(/\s+/g, " ").trim();
+    t = t.replace(/(?<=[\d.,])(or\s*best\s*offer)\s*$/i, "");
+    t = t.replace(/\s*or\s*best\s*offer\s*$/i, "");
+    t = t.replace(/\s*\+\s*shipping.*$/i, "");
+    t = t.replace(/\s+/g, " ").trim();
+    return t;
+}
 async function extractPriceFromItemDom(pricePage) {
     return pricePage.evaluate(() => {
         function norm(s) {
@@ -638,6 +649,9 @@ async function main() {
         const pageNum = await getCrawlPage(pool, market, SEED_KEY);
         try {
             const { url: pageUrl, rows, diag } = await fetchOnePage(browser, market, seedUrl, pageNum);
+            for (const r of rows) {
+                r.priceText = normalizePriceText(r.priceText);
+            }
             const inserted = await upsertObservations(pool, market, rows, PARSE_VERSION);
             await incrementBudget(pool, day, market);
             if (rows.length === 0) {

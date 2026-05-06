@@ -251,6 +251,17 @@ function randBetween(a: number, b: number): number {
   return a + Math.floor(Math.random() * (b - a + 1));
 }
 
+/** Remove listing suffix noise (e.g. `£10.76or Best Offer` → `£10.76`). */
+function normalizePriceText(raw: string): string {
+  if (!raw?.trim()) return "";
+  let t = raw.replace(/\s+/g, " ").trim();
+  t = t.replace(/(?<=[\d.,])(or\s*best\s*offer)\s*$/i, "");
+  t = t.replace(/\s*or\s*best\s*offer\s*$/i, "");
+  t = t.replace(/\s*\+\s*shipping.*$/i, "");
+  t = t.replace(/\s+/g, " ").trim();
+  return t;
+}
+
 type Row = {
   itemId: string;
   title: string;
@@ -748,6 +759,9 @@ async function main() {
 
     try {
       const { url: pageUrl, rows, diag } = await fetchOnePage(browser, market, seedUrl, pageNum);
+      for (const r of rows) {
+        r.priceText = normalizePriceText(r.priceText);
+      }
       const inserted = await upsertObservations(pool, market, rows, PARSE_VERSION);
       await incrementBudget(pool, day, market);
 
