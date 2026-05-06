@@ -247,12 +247,12 @@ async function fetchOnePage(
     await humanHoverSomeCards(page);
     await humanReadingPause();
     await sleep(randBetween(300, 1200));
-    const location = page.url();
+    const loadedUrl = page.url();
     const html = await page.content();
     if (botWall(html)) {
       throw new Error("bot_wall");
     }
-    if (ebayErrorPage(html, location)) {
+    if (ebayErrorPage(html, loadedUrl)) {
       throw new Error("ebay_error_page");
     }
     const { rows, diag } = await page.evaluate(
@@ -344,7 +344,7 @@ async function fetchOnePage(
         return {
           rows: out,
           diag: {
-            finalUrl: location.href,
+            finalUrl: window.location.href,
             title: document.title || "",
             cards: document.querySelectorAll("div.s-card[data-listingid]").length,
             sItems: document.querySelectorAll("li.s-item").length,

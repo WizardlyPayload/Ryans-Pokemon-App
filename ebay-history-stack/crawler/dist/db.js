@@ -1,7 +1,52 @@
+import { readFileSync, existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import pg from "pg";
 const { Pool } = pg;
+const DOCKER_SCHEMA = "/app/migrations/001_init.sql";
+const ADV_LOCK_K1 = 8129347;
+const ADV_LOCK_K2 = 291834;
+function resolveSchemaSqlPath() {
+    if (process.env.SCHEMA_SQL_PATH)
+        return process.env.SCHEMA_SQL_PATH;
+    if (existsSync(DOCKER_SCHEMA))
+        return DOCKER_SCHEMA;
+    const here = dirname(fileURLToPath(import.meta.url));
+    return join(here, "../../migrations/001_init.sql");
+}
+function migrationStatements(raw) {
+    const noLineComments = raw
+        .split("\n")
+        .map((line) => (line.trimStart().startsWith("--") ? "" : line))
+        .join("\n");
+    return noLineComments
+        .split(";")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+}
 export function createPool(url) {
     return new Pool({ connectionString: url });
+}
+/** Idempotent CREATE IF NOT EXISTS — runs before crawl loop (initdb.d skips existing volumes). */
+export async function ensureSchema(pool) {
+    const sql = readFileSync(resolveSchemaSqlPath(), "utf8");
+    const statements = migrationStatements(sql);
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        await client.query("SELECT pg_advisory_xact_lock($1, $2)", [ADV_LOCK_K1, ADV_LOCK_K2]);
+        for (const stmt of statements) {
+            await client.query(`${stmt};`);
+        }
+        await client.query("COMMIT");
+    }
+    catch (e) {
+        await client.query("ROLLBACK").catch(() => { });
+        throw e;
+    }
+    finally {
+        client.release();
+    }
 }
 export async function ensureBudgetRow(pool, day) {
     await pool.query(`INSERT INTO crawl_budget_daily (day, pages_total, us_pages, uk_pages)
