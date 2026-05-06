@@ -225,7 +225,6 @@ async function fetchOnePage(browser: Browser, market: Market, seedUrl: string, p
     }
     const rows = await page.evaluate(
       (pageUrlArg) => {
-        const cards = Array.from(document.querySelectorAll("div.s-card[data-listingid]"));
         const out: Array<{
           itemId: string;
           title: string;
@@ -235,27 +234,36 @@ async function fetchOnePage(browser: Browser, market: Market, seedUrl: string, p
           itemUrl: string;
           pageUrl: string;
         }> = [];
+        const seen = new Set<string>();
+
+        const cards = Array.from(document.querySelectorAll("div.s-card[data-listingid], li.s-item"));
         for (const card of cards) {
-          const listingId = card.getAttribute("data-listingid") || "";
-          const links = Array.from(card.querySelectorAll('a.s-card__link[href*="/itm/"]'));
+          const links = Array.from(card.querySelectorAll('a[href*="/itm/"]'));
           let href = "";
           let title = "";
           for (const a of links) {
             const el = a as HTMLAnchorElement;
             if (!href && el.href) href = el.href.split("?")[0];
-            const isImg = el.classList.contains("image-treatment");
-            const t = (el.textContent || "").trim();
-            if (!isImg && t.length > 5 && !t.toLowerCase().startsWith("shop on ebay")) title = t;
+            const text = (el.textContent || "").trim();
+            if (text.length > 5 && !text.toLowerCase().startsWith("shop on ebay")) title = text;
           }
-          const img = card.querySelector("img.s-card__image");
+          if (!href) continue;
+
+          const idFromHref = href.match(/\/itm\/(\d{8,})/)?.[1] || "";
+          const idFromAttr = (card.getAttribute("data-listingid") || "").replace(/\D/g, "");
+          const cleanId = idFromAttr || idFromHref;
+          if (!cleanId || seen.has(cleanId)) continue;
+
+          const img = card.querySelector("img");
           if (!title && img) title = (img.getAttribute("alt") || "").trim();
-          const priceEl = card.querySelector(".s-card__price");
-          const cap = card.querySelector(".s-card__caption");
-          const priceText = priceEl?.textContent?.trim() || "";
-          const caption = cap?.textContent?.trim() || "";
+          const priceText =
+            card.querySelector(".s-card__price, .s-item__price")?.textContent?.trim() || "";
+          const caption =
+            card.querySelector(".s-card__caption, .s-item__subtitle")?.textContent?.trim() || "";
           const thumbUrl = img?.getAttribute("src") || img?.getAttribute("data-src") || "";
-          const cleanId = listingId.replace(/\D/g, "");
-          if (!cleanId || !href || title.length < 5) continue;
+          if (title.length < 5) continue;
+
+          seen.add(cleanId);
           out.push({
             itemId: cleanId,
             title,
