@@ -56,7 +56,7 @@ services:
       MAX_DELAY_MS: ${MAX_DELAY_MS:-45000}
       PARSE_VERSION: "1"
       US_SEED_URL: ${US_SEED_URL:-https://www.ebay.com/sch/i.html?_sacat=31392&LH_Sold=1&LH_Complete=1&_ipg=60&rt=nc}
-      UK_SEED_URL: ${UK_SEED_URL:-https://www.ebay.co.uk/sch/i.html?_sacat=0&LH_Sold=1&LH_Complete=1&_ipg=60&rt=nc}
+      UK_SEED_URL: ${UK_SEED_URL:-https://www.ebay.co.uk/sch/i.html?_nkw=pokemon+card&LH_Sold=1&LH_Complete=1&_ipg=60&rt=nc}
 
 volumes:
   postgres_data:

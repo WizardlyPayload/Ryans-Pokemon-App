@@ -44,7 +44,10 @@ const PAGE_ERR_BACKOFF_MIN_MS = 60_000;
 const PAGE_ERR_BACKOFF_MAX_MS = 180_000;
 const PARSE_VERSION = process.env.PARSE_VERSION || "1";
 const US_SEED = process.env.US_SEED_URL || "https://www.ebay.com/sch/i.html?_sacat=31392&LH_Sold=1&LH_Complete=1&_ipg=60&rt=nc";
-const UK_SEED = process.env.UK_SEED_URL || "https://www.ebay.co.uk/sch/i.html?_sacat=0&LH_Sold=1&LH_Complete=1&_ipg=60&rt=nc";
+// Do not use `_sacat=0` on UK — eBay redirects to `/b/0/` “Error page”. Keyword sold search is valid.
+const UK_SEED =
+  process.env.UK_SEED_URL ||
+  "https://www.ebay.co.uk/sch/i.html?_nkw=pokemon+card&LH_Sold=1&LH_Complete=1&_ipg=60&rt=nc";
 
 const SEED_KEY = "category_sold";
 
@@ -141,6 +144,9 @@ async function warmupEbayHome(page: import("playwright").Page, market: Market): 
   if (botWall(homeHtml)) {
     throw new Error("bot_wall");
   }
+  if (ebayErrorPage(homeHtml, page.url())) {
+    throw new Error("ebay_error_page");
+  }
   await sleep(randBetween(1500, 4500));
   await humanSkimHome(page);
 }
@@ -153,6 +159,15 @@ function botWall(html: string): boolean {
     h.includes("are you a robot") ||
     (h.includes("access denied") && h.includes("edgesuite"))
   );
+}
+
+/** eBay “Error page” / invalid browse (e.g. `/b/0/` from bad `_sacat=0`). */
+function ebayErrorPage(html: string, location: string): boolean {
+  const h = html.toLowerCase();
+  const u = location.toLowerCase();
+  if (h.includes("error page | ebay") || (h.includes("error page") && h.includes("| ebay"))) return true;
+  if (/\/b\/0\/?(\?|$)/.test(u)) return true;
+  return false;
 }
 
 function buildSearchUrl(seed: string, pageNum: number): string {
@@ -232,9 +247,13 @@ async function fetchOnePage(
     await humanHoverSomeCards(page);
     await humanReadingPause();
     await sleep(randBetween(300, 1200));
+    const location = page.url();
     const html = await page.content();
     if (botWall(html)) {
       throw new Error("bot_wall");
+    }
+    if (ebayErrorPage(html, location)) {
+      throw new Error("ebay_error_page");
     }
     const { rows, diag } = await page.evaluate(
       (pageUrlArg) => {
@@ -352,6 +371,8 @@ async function main() {
   const caps = capsForDay();
   let lastMarket: Market = "uk";
 
+  const badUkSacat0 =
+    UK_SEED.includes("ebay.co.uk") && (UK_SEED.includes("_sacat=0") || UK_SEED.includes("_sacat=0&"));
   console.log(
     JSON.stringify({
       msg: "crawler_start",
@@ -361,6 +382,7 @@ async function main() {
       warmupEbayHome: WARMUP_EBAY_HOME,
       proxyConfigured: Boolean(proxyForPlaywright()),
       humanBehavior: "stealth_plugin+home_warmup+scroll_hover_read",
+      badUkSacat0,
     }),
   );
 
