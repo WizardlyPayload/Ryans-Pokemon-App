@@ -314,6 +314,22 @@ async function fetchOnePage(
             .trim();
         }
 
+        /** Last resort: sold SERPs often omit legacy price classes — scrape visible currency from the card. */
+        function priceGuessFromInnerText(card: Element): string {
+          const text = (card.innerText || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ");
+          const patterns: RegExp[] = [
+            /£\s*[\d,]+(?:\.\d{2})?/,
+            /\$\s*[\d,]+(?:\.\d{2})?/,
+            /€\s*[\d,]+(?:\.\d{2})?/,
+            /\bGBP\s*[\d,]+(?:\.\d{2})?\b/i,
+          ];
+          for (const re of patterns) {
+            const m = text.match(re);
+            if (m) return m[0].replace(/\s+/g, " ").trim();
+          }
+          return "";
+        }
+
         /** Sold-search markup varies by locale; try several nodes that usually hold £ / $ / digits. */
         function priceFromListingCard(card: Element): string {
           const selectors = [
@@ -333,7 +349,7 @@ async function fetchOnePage(
           const vague = card.querySelector(".s-item__details [class*='price'], .s-item__detail [class*='price']");
           const vt = (vague?.textContent || "").replace(/\s+/g, " ").trim();
           if (vt && /[\d£$€]/.test(vt) && vt.length < 160) return vt;
-          return "";
+          return priceGuessFromInnerText(card);
         }
 
         const out: Array<{
