@@ -53,6 +53,10 @@ services:
       US_SEED_URL: ${US_SEED_URL:-https://www.ebay.com/sch/i.html?_sacat=31392&LH_Sold=1&LH_Complete=1&_ipg=60&rt=nc}
       # Never use _sacat=0 on ebay.co.uk — redirects to /b/0/ error page.
       UK_SEED_URL: ${UK_SEED_URL:-https://www.ebay.co.uk/sch/i.html?_nkw=pokemon+card&LH_Sold=1&LH_Complete=1&_ipg=60&rt=nc}
+      ITEM_PRICE_ENRICH: ${ITEM_PRICE_ENRICH:-true}
+      ITEM_PRICE_ENRICH_MAX: ${ITEM_PRICE_ENRICH_MAX:-0}
+      ITEM_NAV_MIN_MS: ${ITEM_NAV_MIN_MS:-400}
+      ITEM_NAV_MAX_MS: ${ITEM_NAV_MAX_MS:-1400}
 
 volumes:
   postgres_data:

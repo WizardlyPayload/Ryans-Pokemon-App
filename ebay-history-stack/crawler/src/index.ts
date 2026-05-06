@@ -1,4 +1,4 @@
-import type { Browser } from "playwright";
+import type { Browser, BrowserContext } from "playwright";
 import { chromium } from "playwright-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import {
@@ -63,6 +63,16 @@ const PRE_NAV_MAX_MS = Math.max(PRE_NAV_MIN_MS, Number(process.env.PRE_NAV_MAX_M
 
 /** Load ebay.co.uk / ebay.com first so the search request has same-site cookies + referrer chain (toggle off if too slow). */
 const WARMUP_EBAY_HOME = (process.env.WARMUP_EBAY_HOME || "true").toLowerCase() === "true";
+
+/**
+ * Sold SERPs often omit £/$ on the grid — open each listing page to read price (og:meta, itemprop, vitals).
+ * Set ITEM_PRICE_ENRICH=false to disable (faster, usually no price_text).
+ */
+const ITEM_PRICE_ENRICH = (process.env.ITEM_PRICE_ENRICH || "true").toLowerCase() === "true";
+/** Max listing pages to open per SERP when price is missing (0 = all missing rows). */
+const ITEM_PRICE_ENRICH_MAX = Math.max(0, Number(process.env.ITEM_PRICE_ENRICH_MAX || "0"));
+const ITEM_NAV_MIN_MS = Math.max(50, Number(process.env.ITEM_NAV_MIN_MS ?? 400));
+const ITEM_NAV_MAX_MS = Math.max(ITEM_NAV_MIN_MS, Number(process.env.ITEM_NAV_MAX_MS ?? 1400));
 
 /** Launched browser: bundled Chromium + stealth plugin + non-default window args. */
 function launchChromium() {
@@ -257,6 +267,79 @@ type ParseDiag = {
   itmLinks: number;
 };
 
+async function enrichMissingPricesFromItemPages(
+  ctx: BrowserContext,
+  rows: Row[],
+  searchReferer: string,
+): Promise<{ enriched: number; attempted: number }> {
+  let enriched = 0;
+  let attempted = 0;
+  const pricePage = await ctx.newPage();
+  await addExtraInitScript(pricePage);
+  try {
+    for (const row of rows) {
+      if (row.priceText?.trim()) continue;
+      if (ITEM_PRICE_ENRICH_MAX > 0 && attempted >= ITEM_PRICE_ENRICH_MAX) break;
+      attempted++;
+      try {
+        await pricePage.goto(row.itemUrl, {
+          waitUntil: "domcontentloaded",
+          timeout: 55_000,
+          referer: searchReferer,
+        });
+        await sleep(randBetween(200, 700));
+        const price = await pricePage.evaluate(() => {
+          function norm(s: string): string {
+            return s.replace(/\s+/g, " ").trim();
+          }
+          const ogAmt = document.querySelector('meta[property="og:price:amount"]')?.getAttribute("content")?.trim();
+          const ogCur =
+            document.querySelector('meta[property="og:price:currency"]')?.getAttribute("content")?.trim() || "";
+          if (ogAmt && /^[\d.,]+$/.test(ogAmt)) {
+            if (ogCur === "GBP") return `£${ogAmt}`;
+            if (ogCur === "USD") return `$${ogAmt}`;
+            if (ogCur === "EUR") return `€${ogAmt}`;
+            if (ogCur) return `${ogAmt} ${ogCur}`;
+            return ogAmt;
+          }
+          const ip = document.querySelector('[itemprop="price"]');
+          const ic = ip?.getAttribute("content")?.trim();
+          if (ic && /[\d.]/.test(ic)) return ic;
+          const ipText = norm(ip?.textContent || "");
+          if (ipText.length > 0 && ipText.length < 80 && /[\d£$€]/.test(ipText)) return ipText;
+          for (const sel of [
+            '[data-testid="x-price-primary"]',
+            ".x-price-primary span",
+            ".x-price-primary",
+            "#prcIsum",
+            ".vim.d-price",
+            ".vi-price",
+          ]) {
+            const el = document.querySelector(sel);
+            const t = norm(el?.textContent || "");
+            if (t.length > 0 && t.length < 120 && /[\d£$€.,]/.test(t)) return t;
+          }
+          const uk = norm(document.body?.innerText || "").match(/[\u00A3£]\s*[\d,]+(?:\.\d{1,2})?/);
+          if (uk) return uk[0].replace(/\s+/g, " ").trim();
+          const us = norm(document.body?.innerText || "").match(/\$\s*[\d,]+(?:\.\d{1,2})?/);
+          if (us) return us[0].trim();
+          return "";
+        });
+        if (price) {
+          row.priceText = price;
+          enriched++;
+        }
+      } catch {
+        /* listing blocked or timeout — skip */
+      }
+      await sleep(randBetween(ITEM_NAV_MIN_MS, ITEM_NAV_MAX_MS));
+    }
+  } finally {
+    await pricePage.close();
+  }
+  return { enriched, attempted };
+}
+
 async function fetchOnePage(
   browser: Browser,
   market: Market,
@@ -285,6 +368,8 @@ async function fetchOnePage(
     await humanHoverSomeCards(page);
     await humanReadingPause();
     await sleep(randBetween(300, 1200));
+    // Sold SERPs sometimes hydrate prices after layout stabilizes (esp. UK).
+    if (market === "uk") await sleep(1200);
     const loadedUrl = page.url();
     const html = await page.content();
     if (botWall(html)) {
@@ -308,21 +393,34 @@ async function fetchOnePage(
         /** eBay links append screen-reader suffixes to anchor text. */
         function cleanTitleText(t: string): string {
           return t
+            .replace(/^New listing(?=[^\s])/i, "New listing ")
             .replace(/\s*Opens in a new window or tab\s*/gi, " ")
             .replace(/\s*Opens in a new window\s*/gi, " ")
             .replace(/\s+/g, " ")
             .trim();
         }
 
-        /** Last resort: sold SERPs often omit legacy price classes — scrape visible currency from the card. */
+        /** Price sometimes lives in the row `<li>`, not inside `div.s-card`. */
+        function listingRowRoot(card: Element): Element {
+          return card.closest("li.s-item") ?? card;
+        }
+
+        /**
+         * Last resort: merge innerText + textContent — hidden/ARIA nodes sometimes hold £ while innerText omits them.
+         * Match common Unicode pound (U+00A3) and literal £.
+         */
         function priceGuessFromInnerText(card: Element): string {
-          const raw = card instanceof HTMLElement ? card.innerText : card.textContent || "";
-          const text = raw.replace(/\u00a0/g, " ").replace(/\s+/g, " ");
+          const ht = card instanceof HTMLElement ? card.innerText : "";
+          const tc = card.textContent || "";
+          const text = `${ht}\n${tc}`
+            .replace(/\u00a0/g, " ")
+            .replace(/\u200e|\u200f/g, "")
+            .replace(/\s+/g, " ");
           const patterns: RegExp[] = [
-            /£\s*[\d,]+(?:\.\d{2})?/,
-            /\$\s*[\d,]+(?:\.\d{2})?/,
-            /€\s*[\d,]+(?:\.\d{2})?/,
-            /\bGBP\s*[\d,]+(?:\.\d{2})?\b/i,
+            /[\u00A3£]\s*[\d,]+(?:\.\d{1,2})?/,
+            /\$\s*[\d,]+(?:\.\d{1,2})?/,
+            /€\s*[\d,]+(?:\.\d{1,2})?/,
+            /\bGBP\s*[\d,]+(?:\.\d{1,2})?\b/i,
           ];
           for (const re of patterns) {
             const m = text.match(re);
@@ -333,6 +431,7 @@ async function fetchOnePage(
 
         /** Sold-search markup varies by locale; try several nodes that usually hold £ / $ / digits. */
         function priceFromListingCard(card: Element): string {
+          const root = listingRowRoot(card);
           const selectors = [
             ".s-card__price",
             ".s-item__price",
@@ -343,14 +442,14 @@ async function fetchOnePage(
             "[data-testid*='price']",
           ];
           for (const sel of selectors) {
-            const el = card.querySelector(sel);
+            const el = root.querySelector(sel);
             const t = (el?.textContent || "").replace(/\s+/g, " ").trim();
-            if (t && /[\d£$€.,]/.test(t) && t.length < 160) return t;
+            if (t && /[\d£$€.,\u00a3]/.test(t) && t.length < 160) return t;
           }
-          const vague = card.querySelector(".s-item__details [class*='price'], .s-item__detail [class*='price']");
+          const vague = root.querySelector(".s-item__details [class*='price'], .s-item__detail [class*='price']");
           const vt = (vague?.textContent || "").replace(/\s+/g, " ").trim();
-          if (vt && /[\d£$€]/.test(vt) && vt.length < 160) return vt;
-          return priceGuessFromInnerText(card);
+          if (vt && /[\d£$€\u00a3]/.test(vt) && vt.length < 160) return vt;
+          return priceGuessFromInnerText(root);
         }
 
         const out: Array<{
@@ -452,6 +551,21 @@ async function fetchOnePage(
       },
       url,
     );
+
+    const missingPrices = rows.filter((r) => !r.priceText?.trim()).length;
+    if (ITEM_PRICE_ENRICH && missingPrices > 0) {
+      const stats = await enrichMissingPricesFromItemPages(ctx, rows, loadedUrl);
+      console.log(
+        JSON.stringify({
+          msg: "item_price_enrich_done",
+          searchUrl: url,
+          missingBefore: missingPrices,
+          enriched: stats.enriched,
+          attempted: stats.attempted,
+        }),
+      );
+    }
+
     return { url, rows, diag };
   } finally {
     await ctx.close();
@@ -482,6 +596,8 @@ async function main() {
       humanBehavior: "stealth_plugin+home_warmup+scroll_hover_read",
       badUkSacat0,
       ukSeedEnvHadSacat0,
+      itemPriceEnrich: ITEM_PRICE_ENRICH,
+      itemPriceEnrichMax: ITEM_PRICE_ENRICH_MAX,
     }),
   );
 
