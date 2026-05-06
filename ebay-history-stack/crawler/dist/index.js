@@ -112,7 +112,15 @@ async function warmupEbayHome(page, market) {
         throw new Error("bot_wall");
     }
     if (ebayErrorPage(homeHtml, page.url())) {
-        throw new Error("ebay_error_page");
+        // Datacenter IPs sometimes get the generic home error while `/sch/i.html` still works — do not abort the crawl.
+        console.log(JSON.stringify({
+            msg: "warmup_home_error_page_skip",
+            market,
+            finalUrl: page.url(),
+            docTitle: ebayDocTitle(homeHtml).slice(0, 200),
+        }));
+        await sleep(randBetween(800, 2200));
+        return;
     }
     await sleep(randBetween(1500, 4500));
     await humanSkimHome(page);
@@ -124,13 +132,20 @@ function botWall(html) {
         h.includes("are you a robot") ||
         (h.includes("access denied") && h.includes("edgesuite")));
 }
-/** eBay “Error page” / invalid browse (e.g. `/b/0/` from bad `_sacat=0`). */
+function ebayDocTitle(html) {
+    const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    return (m?.[1] ?? "").replace(/\s+/g, " ").trim();
+}
+/**
+ * eBay “Error page | eBay” / invalid browse (e.g. `/b/0/` from bad `_sacat=0`).
+ * Use **document title only** — the full HTML often contains the words “error” in scripts/JSON and caused false positives.
+ */
 function ebayErrorPage(html, location) {
-    const h = html.toLowerCase();
     const u = location.toLowerCase();
-    if (h.includes("error page | ebay") || (h.includes("error page") && h.includes("| ebay")))
-        return true;
     if (/\/b\/0\/?(\?|$)/.test(u))
+        return true;
+    const t = ebayDocTitle(html).toLowerCase();
+    if (t.includes("error page") && t.includes("ebay"))
         return true;
     return false;
 }
@@ -158,6 +173,17 @@ function capsForDay() {
 }
 function sleep(ms) {
     return new Promise((r) => setTimeout(r, ms));
+}
+/** Chromium/renderer died — must launch a fresh browser or every action fails. */
+function shouldRelaunchBrowser(err) {
+    const e = err.toLowerCase();
+    return (e.includes("target crashed") ||
+        e.includes("target closed") ||
+        e.includes("browser has been closed") ||
+        e.includes("browser closed") ||
+        e.includes("session closed") ||
+        e.includes("protocol error: browser") ||
+        e.includes("connection closed"));
 }
 function randBetween(a, b) {
     return a + Math.floor(Math.random() * (b - a + 1));
@@ -192,9 +218,65 @@ async function fetchOnePage(browser, market, seedUrl, pageNum) {
             throw new Error("bot_wall");
         }
         if (ebayErrorPage(html, loadedUrl)) {
+            console.log(JSON.stringify({
+                msg: "ebay_error_page_detected",
+                market,
+                phase: "search",
+                requestedUrl: url,
+                finalUrl: loadedUrl,
+                docTitle: ebayDocTitle(html).slice(0, 200),
+            }));
             throw new Error("ebay_error_page");
         }
         const { rows, diag } = await page.evaluate((pageUrlArg) => {
+            /** eBay links append screen-reader suffixes to anchor text. */
+            function cleanTitleText(t) {
+                return t
+                    .replace(/\s*Opens in a new window or tab\s*/gi, " ")
+                    .replace(/\s*Opens in a new window\s*/gi, " ")
+                    .replace(/\s+/g, " ")
+                    .trim();
+            }
+            /** Last resort: sold SERPs often omit legacy price classes — scrape visible currency from the card. */
+            function priceGuessFromInnerText(card) {
+                const raw = card instanceof HTMLElement ? card.innerText : card.textContent || "";
+                const text = raw.replace(/\u00a0/g, " ").replace(/\s+/g, " ");
+                const patterns = [
+                    /£\s*[\d,]+(?:\.\d{2})?/,
+                    /\$\s*[\d,]+(?:\.\d{2})?/,
+                    /€\s*[\d,]+(?:\.\d{2})?/,
+                    /\bGBP\s*[\d,]+(?:\.\d{2})?\b/i,
+                ];
+                for (const re of patterns) {
+                    const m = text.match(re);
+                    if (m)
+                        return m[0].replace(/\s+/g, " ").trim();
+                }
+                return "";
+            }
+            /** Sold-search markup varies by locale; try several nodes that usually hold £ / $ / digits. */
+            function priceFromListingCard(card) {
+                const selectors = [
+                    ".s-card__price",
+                    ".s-item__price",
+                    ".s-item__paid",
+                    ".s-item__purchase-options .s-item__price",
+                    "[class*='s-item__price']",
+                    "[data-testid='s-item__price']",
+                    "[data-testid*='price']",
+                ];
+                for (const sel of selectors) {
+                    const el = card.querySelector(sel);
+                    const t = (el?.textContent || "").replace(/\s+/g, " ").trim();
+                    if (t && /[\d£$€.,]/.test(t) && t.length < 160)
+                        return t;
+                }
+                const vague = card.querySelector(".s-item__details [class*='price'], .s-item__detail [class*='price']");
+                const vt = (vague?.textContent || "").replace(/\s+/g, " ").trim();
+                if (vt && /[\d£$€]/.test(vt) && vt.length < 160)
+                    return vt;
+                return priceGuessFromInnerText(card);
+            }
             const out = [];
             const seen = new Set();
             const cards = Array.from(document.querySelectorAll("div.s-card[data-listingid], li.s-item"));
@@ -207,7 +289,7 @@ async function fetchOnePage(browser, market, seedUrl, pageNum) {
                     const el = a;
                     if (!href && el.href)
                         href = el.href.split("?")[0];
-                    const text = (el.textContent || "").trim();
+                    const text = cleanTitleText((el.textContent || "").trim());
                     if (text.length > 5 && !text.toLowerCase().startsWith("shop on ebay"))
                         title = text;
                 }
@@ -220,8 +302,10 @@ async function fetchOnePage(browser, market, seedUrl, pageNum) {
                     continue;
                 const img = card.querySelector("img");
                 if (!title && img)
-                    title = (img.getAttribute("alt") || "").trim();
-                const priceText = card.querySelector(".s-card__price, .s-item__price")?.textContent?.trim() || "";
+                    title = cleanTitleText((img.getAttribute("alt") || "").trim());
+                else
+                    title = cleanTitleText(title);
+                const priceText = priceFromListingCard(card);
                 const caption = card.querySelector(".s-card__caption, .s-item__subtitle")?.textContent?.trim() || "";
                 const thumbUrl = img?.getAttribute("src") || img?.getAttribute("data-src") || "";
                 if (title.length < 5)
@@ -247,12 +331,13 @@ async function fetchOnePage(browser, market, seedUrl, pageNum) {
                     if (!cleanId || seen.has(cleanId))
                         continue;
                     const root = a.closest("li, div, article") ?? document.body;
-                    const title = (a.textContent || "").trim() ||
-                        (root.querySelector("h1,h2,h3,[role='heading']")?.textContent || "").trim();
+                    const title = cleanTitleText((a.textContent || "").trim() ||
+                        (root.querySelector("h1,h2,h3,[role='heading']")?.textContent || "").trim());
                     if (!title || title.length < 5)
                         continue;
                     const img = root.querySelector("img");
-                    const priceText = root.querySelector(".s-card__price, .s-item__price, [class*='price']")?.textContent?.trim() ||
+                    const priceText = priceFromListingCard(root) ||
+                        root.querySelector(".s-card__price, .s-item__price, [class*='price']")?.textContent?.trim() ||
                         "";
                     const caption = root.querySelector(".s-card__caption, .s-item__subtitle, [class*='subtitle']")?.textContent?.trim() ||
                         "";
@@ -376,8 +461,14 @@ async function main() {
             const err = e instanceof Error ? e.message : String(e);
             await logEvent(pool, market, "page_error", { pageNum, error: err });
             console.error(JSON.stringify({ msg: "page_error", market, error: err }));
-            if (err.includes("browser") || err.includes("Target closed")) {
-                await browser.close();
+            if (browser && shouldRelaunchBrowser(err)) {
+                console.log(JSON.stringify({ msg: "browser_relaunch", reason: err.slice(0, 300) }));
+                try {
+                    await browser.close();
+                }
+                catch {
+                    /* ignore close errors on dead browser */
+                }
                 browser = await launchChromium();
             }
             const isBotWall = err === "bot_wall";

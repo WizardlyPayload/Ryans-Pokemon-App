@@ -316,7 +316,8 @@ async function fetchOnePage(
 
         /** Last resort: sold SERPs often omit legacy price classes — scrape visible currency from the card. */
         function priceGuessFromInnerText(card: Element): string {
-          const text = (card.innerText || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ");
+          const raw = card instanceof HTMLElement ? card.innerText : card.textContent || "";
+          const text = raw.replace(/\u00a0/g, " ").replace(/\s+/g, " ");
           const patterns: RegExp[] = [
             /£\s*[\d,]+(?:\.\d{2})?/,
             /\$\s*[\d,]+(?:\.\d{2})?/,
