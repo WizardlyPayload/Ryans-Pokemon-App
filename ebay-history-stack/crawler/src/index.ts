@@ -196,7 +196,20 @@ type Row = {
   pageUrl: string;
 };
 
-async function fetchOnePage(browser: Browser, market: Market, seedUrl: string, pageNum: number): Promise<{ url: string; rows: Row[] }> {
+type ParseDiag = {
+  finalUrl: string;
+  title: string;
+  cards: number;
+  sItems: number;
+  itmLinks: number;
+};
+
+async function fetchOnePage(
+  browser: Browser,
+  market: Market,
+  seedUrl: string,
+  pageNum: number,
+): Promise<{ url: string; rows: Row[]; diag: ParseDiag }> {
   const ctx = await browser.newContext(newContextOptions(market));
   const page = await ctx.newPage();
   await addExtraInitScript(page);
@@ -223,7 +236,7 @@ async function fetchOnePage(browser: Browser, market: Market, seedUrl: string, p
     if (botWall(html)) {
       throw new Error("bot_wall");
     }
-    const rows = await page.evaluate(
+    const { rows, diag } = await page.evaluate(
       (pageUrlArg) => {
         const out: Array<{
           itemId: string;
@@ -235,8 +248,9 @@ async function fetchOnePage(browser: Browser, market: Market, seedUrl: string, p
           pageUrl: string;
         }> = [];
         const seen = new Set<string>();
-
         const cards = Array.from(document.querySelectorAll("div.s-card[data-listingid], li.s-item"));
+        const allItmLinks = Array.from(document.querySelectorAll('a[href*="/itm/"]')) as HTMLAnchorElement[];
+
         for (const card of cards) {
           const links = Array.from(card.querySelectorAll('a[href*="/itm/"]'));
           let href = "";
@@ -274,11 +288,54 @@ async function fetchOnePage(browser: Browser, market: Market, seedUrl: string, p
             pageUrl: pageUrlArg,
           });
         }
-        return out;
+
+        // Fallback: some eBay layouts don't use expected card wrappers.
+        if (out.length === 0) {
+          for (const a of allItmLinks) {
+            const href = (a.href || "").split("?")[0];
+            if (!href) continue;
+            const cleanId = href.match(/\/itm\/(\d{8,})/)?.[1] || "";
+            if (!cleanId || seen.has(cleanId)) continue;
+            const root = a.closest("li, div, article") ?? document.body;
+            const title =
+              (a.textContent || "").trim() ||
+              (root.querySelector("h1,h2,h3,[role='heading']")?.textContent || "").trim();
+            if (!title || title.length < 5) continue;
+            const img = root.querySelector("img");
+            const priceText =
+              root.querySelector(".s-card__price, .s-item__price, [class*='price']")?.textContent?.trim() ||
+              "";
+            const caption =
+              root.querySelector(".s-card__caption, .s-item__subtitle, [class*='subtitle']")?.textContent?.trim() ||
+              "";
+            const thumbUrl = img?.getAttribute("src") || img?.getAttribute("data-src") || "";
+            seen.add(cleanId);
+            out.push({
+              itemId: cleanId,
+              title,
+              priceText,
+              caption,
+              thumbUrl,
+              itemUrl: href,
+              pageUrl: pageUrlArg,
+            });
+          }
+        }
+
+        return {
+          rows: out,
+          diag: {
+            finalUrl: location.href,
+            title: document.title || "",
+            cards: document.querySelectorAll("div.s-card[data-listingid]").length,
+            sItems: document.querySelectorAll("li.s-item").length,
+            itmLinks: allItmLinks.length,
+          },
+        };
       },
       url,
     );
-    return { url, rows };
+    return { url, rows, diag };
   } finally {
     await ctx.close();
   }
@@ -357,13 +414,14 @@ async function main() {
     const pageNum = await getCrawlPage(pool, market, SEED_KEY);
 
     try {
-      const { url: pageUrl, rows } = await fetchOnePage(browser, market, seedUrl, pageNum);
+      const { url: pageUrl, rows, diag } = await fetchOnePage(browser, market, seedUrl, pageNum);
       const inserted = await upsertObservations(pool, market, rows, PARSE_VERSION);
       await incrementBudget(pool, day, market);
 
       if (rows.length === 0) {
         await setCrawlPage(pool, market, SEED_KEY, 0);
-        await logEvent(pool, market, "empty_page_reset", { pageNum, pageUrl });
+        await logEvent(pool, market, "empty_page_reset", { pageNum, pageUrl, diag });
+        console.log(JSON.stringify({ msg: "parse_zero_debug", market, pageNum, pageUrl, diag }));
       } else {
         await setCrawlPage(pool, market, SEED_KEY, pageNum + 1);
       }
