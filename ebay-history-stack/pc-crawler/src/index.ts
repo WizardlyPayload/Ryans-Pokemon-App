@@ -111,6 +111,23 @@ async function extractProductPage(page: import("playwright").Page, productUrl: s
       );
     }
 
+    /** Marketplace / sales-velocity tables — not the PSA price grid. */
+    function isSalesVolumeNoiseTable(txt: string): boolean {
+      const t = txt.toLowerCase();
+      if (/volume:\s*\d+\s*sales/.test(t)) return true;
+      if (/sales per (week|day|month|year)/.test(t)) return true;
+      if ((t.match(/\bvolume:/g) || []).length >= 2) return true;
+      return false;
+    }
+
+    function looksLikeGradeColumnLabel(cell: string): boolean {
+      const s = norm(cell);
+      if (!s || s.length > 80) return false;
+      if (/^\$/.test(s)) return false;
+      if (/^[\d,$.\s]+$/.test(s)) return false;
+      return isGradeLabel(s);
+    }
+
     const out = {
       id: null as string | null,
       title: "",
@@ -211,6 +228,7 @@ async function extractProductPage(page: import("playwright").Page, productUrl: s
       const txt = table.innerText || "";
       if (!/\$/.test(txt)) continue;
       if (!/Ungraded|PSA|Grade|BGS|CGC|SGC|\$\d/i.test(txt)) continue;
+      if (isSalesVolumeNoiseTable(txt)) continue;
 
       const rows = [...table.querySelectorAll("tr")];
       const matrix = rows
@@ -219,13 +237,13 @@ async function extractProductPage(page: import("playwright").Page, productUrl: s
 
       if (matrix.length >= 2) {
         const header = matrix[0]!;
-        if (header.some((h) => isGradeLabel(h))) {
-          const priceRow = matrix.find((row) => row.some((c) => /\$\d/.test(c)));
+        if (header.some((h) => looksLikeGradeColumnLabel(h))) {
+          const priceRow = matrix.find((row) => row.some((c) => /\$\d/.test(c) && !/volume:/i.test(c)));
           if (priceRow) {
             for (let i = 0; i < Math.min(header.length, priceRow.length); i++) {
               const h = header[i]!;
               const v = priceRow[i]!;
-              if (isGradeLabel(h) && /\$/.test(v)) addGrade(h, v);
+              if (looksLikeGradeColumnLabel(h) && /\$/.test(v) && !/volume:/i.test(v)) addGrade(h, v);
             }
           }
         }
@@ -237,7 +255,8 @@ async function extractProductPage(page: import("playwright").Page, productUrl: s
         const priceCell = cells[cells.length - 1]!;
         const labelCell = cells[0]!;
         if (!/\$/.test(priceCell)) continue;
-        if (!isGradeLabel(labelCell)) continue;
+        if (/volume:/i.test(priceCell)) continue;
+        if (!looksLikeGradeColumnLabel(labelCell)) continue;
         addGrade(labelCell, priceCell);
       }
     }
@@ -247,6 +266,7 @@ async function extractProductPage(page: import("playwright").Page, productUrl: s
     const tables = [...document.querySelectorAll("table")];
     for (const t of tables) {
       const ttxt = t.innerText || "";
+      if (isSalesVolumeNoiseTable(ttxt)) continue;
       if (/\$/.test(ttxt) && /Ungraded|Grade\s*\d|PSA\s*\d/i.test(ttxt)) {
         out.tierText = ttxt.replace(/\s+/g, " ").trim().slice(0, 12000);
         break;
