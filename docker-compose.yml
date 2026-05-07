@@ -10,6 +10,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./ebay-history-stack/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+      - ./ebay-history-stack/migrations/002_pc_scrape.sql:/docker-entrypoint-initdb.d/002_pc_scrape.sql:ro
     # Keep Postgres internal-only. Do not publish 5432 publicly.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ebayhist -d ebay_history"]
@@ -57,6 +58,24 @@ services:
       ITEM_NAV_MIN_MS: ${ITEM_NAV_MIN_MS:-400}
       ITEM_NAV_MAX_MS: ${ITEM_NAV_MAX_MS:-1400}
       ITEM_PRICE_OCR: ${ITEM_PRICE_OCR:-true}
+
+  pc-crawler:
+    build:
+      context: ./ebay-history-stack
+      dockerfile: pc-crawler/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://ebayhist:${POSTGRES_PASSWORD:-ebayhist_dev_change_me}@postgres:5432/ebay_history
+      PC_CRAWLER_ENABLED: ${PC_CRAWLER_ENABLED:-true}
+      PC_SEARCH_QUERY: ${PC_SEARCH_QUERY:-pikachu}
+      PC_PRODUCTS_PER_RUN: ${PC_PRODUCTS_PER_RUN:-15}
+      PC_MIN_DELAY_MS: ${PC_MIN_DELAY_MS:-3000}
+      PC_MAX_DELAY_MS: ${PC_MAX_DELAY_MS:-14000}
+      PC_LOOP_INTERVAL_MS: ${PC_LOOP_INTERVAL_MS:-3600000}
+      PARSE_VERSION: ${PC_PARSE_VERSION:-1}
 
 volumes:
   postgres_data:
