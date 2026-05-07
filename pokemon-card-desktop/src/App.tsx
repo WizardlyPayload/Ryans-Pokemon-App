@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "./App.css";
@@ -94,6 +94,9 @@ type PcSearchRow = {
   consoleOrCategory?: string | null;
   productUrl: string;
   imageUrl?: string | null;
+  cardNumber?: string | null;
+  releaseDate?: string | null;
+  publisher?: string | null;
   tiers: Record<string, unknown>;
   snapshotAt?: string | null;
   parseVersion?: string | null;
@@ -393,6 +396,13 @@ export default function App() {
   }, [pcApiSearchQuery, pcApiApiBase, pcApiApiKey]);
 
   function tiersPreview(tiers: unknown): string {
+    if (tiers && typeof tiers === "object" && "grades" in tiers) {
+      const gr = (tiers as { grades?: Array<{ grade?: string; priceDisplay?: string }> }).grades;
+      if (Array.isArray(gr) && gr.length > 0) {
+        const line = gr.map((x) => `${x.grade ?? "?"}: ${x.priceDisplay ?? "—"}`).join(" · ");
+        return line.slice(0, 360) + (line.length > 360 ? "..." : "");
+      }
+    }
     if (tiers && typeof tiers === "object" && "gridText" in tiers) {
       const g = (tiers as { gridText?: string }).gridText;
       if (typeof g === "string" && g.trim())
@@ -949,8 +959,8 @@ export default function App() {
                 <thead>
                   <tr>
                     <th>Thumb</th>
-                    <th>Title</th>
-                    <th>Tiers (preview)</th>
+                    <th>Title / meta</th>
+                    <th>Grades & prices</th>
                     <th>Snapshot</th>
                     <th></th>
                   </tr>
@@ -969,6 +979,11 @@ export default function App() {
                         <button type="button" className="linkish table-title-btn" onClick={() => openUrl(r.productUrl)}>
                           {r.title}
                         </button>
+                        <div className="muted small pc-meta-line">
+                          {[r.consoleOrCategory, r.cardNumber, r.releaseDate, r.publisher]
+                            .filter(Boolean)
+                            .join(" · ") || "—"}
+                        </div>
                       </td>
                       <td className="muted small">{tiersPreview(r.tiers)}</td>
                       <td className="muted small">{r.snapshotAt ?? "—"}</td>

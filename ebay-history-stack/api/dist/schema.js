@@ -1,7 +1,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-const MIGRATION_BASENAMES = ["001_init.sql", "002_pc_scrape.sql"];
+const MIGRATION_BASENAMES = ["001_init.sql", "002_pc_scrape.sql", "003_pc_product_metadata.sql"];
 /** Arbitrary lock keys — serialize migration when api + crawler start together. */
 const ADV_LOCK_K1 = 8129347;
 const ADV_LOCK_K2 = 291834;

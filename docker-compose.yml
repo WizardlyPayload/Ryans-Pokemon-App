@@ -11,6 +11,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./ebay-history-stack/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
       - ./ebay-history-stack/migrations/002_pc_scrape.sql:/docker-entrypoint-initdb.d/002_pc_scrape.sql:ro
+      - ./ebay-history-stack/migrations/003_pc_product_metadata.sql:/docker-entrypoint-initdb.d/003_pc_product_metadata.sql:ro
     # Keep Postgres internal-only. Do not publish 5432 publicly.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ebayhist -d ebay_history"]

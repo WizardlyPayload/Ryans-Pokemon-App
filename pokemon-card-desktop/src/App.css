@@ -884,6 +884,12 @@ code {
   vertical-align: middle;
 }
 
+.pc-meta-line {
+  margin-top: 0.25rem;
+  line-height: 1.35;
+  max-width: 42rem;
+}
+
 .compare-split {
   margin-top: 1rem;
   padding-top: 0.75rem;

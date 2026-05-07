@@ -34,6 +34,36 @@ function randBetween(a: number, b: number) {
   return a + Math.floor(Math.random() * (b - a + 1));
 }
 
+function normalizeProductTitle(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+/** Parse a release-style string to `YYYY-MM-DD` for Postgres, or null. */
+function parsePgDate(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const s = raw.trim();
+  const iso = s.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (iso) return iso[1]!;
+  const t = Date.parse(s);
+  if (!Number.isNaN(t)) return new Date(t).toISOString().slice(0, 10);
+  return null;
+}
+
+function detailValue(rows: Array<{ label: string; value: string }>, re: RegExp): string | null {
+  const r = rows.find((x) => re.test(x.label.trim()));
+  return r?.value?.trim() || null;
+}
+
+function extractCardFromTitle(title: string): string | null {
+  const m = title.match(/#\s*([\w\-\/]+)/);
+  return m ? `#${m[1]}` : null;
+}
+
+function nonEmpty(s: string | null | undefined): string | null {
+  const t = (s ?? "").trim();
+  return t.length > 0 ? t : null;
+}
+
 function launchChromium() {
   return chromium.launch({
     headless: true,
@@ -46,23 +76,58 @@ function launchChromium() {
   });
 }
 
-async function extractProductPage(page: import("playwright").Page, productUrl: string) {
+type ExtractedProduct = {
+  id: string | null;
+  title: string;
+  console: string | null;
+  image: string | null;
+  tierText: string;
+  grades: Array<{ grade: string; priceDisplay: string; priceUsd: number | null }>;
+  detailRows: Array<{ label: string; value: string }>;
+  releaseDateRaw: string | null;
+  cardNumberRaw: string | null;
+  publisherRaw: string | null;
+};
+
+async function extractProductPage(page: import("playwright").Page, productUrl: string): Promise<ExtractedProduct> {
   return page.evaluate((url) => {
-    const out: {
-      id: string | null;
-      title: string;
-      console: string | null;
-      image: string | null;
-      tierText: string;
-    } = {
-      id: null,
+    function norm(s: string | null | undefined): string {
+      return (s || "").replace(/\s+/g, " ").trim();
+    }
+    function priceUsdFromText(t: string): number | null {
+      const m = t.replace(/,/g, "").match(/\$\s*([\d]+(?:\.[\d]+)?)/);
+      if (!m) return null;
+      const n = parseFloat(m[1]!);
+      return Number.isFinite(n) ? n : null;
+    }
+    function isGradeLabel(c: string): boolean {
+      return (
+        /Ungraded/i.test(c) ||
+        /PSA\s*\d+/i.test(c) ||
+        /BGS\s*\d+/i.test(c) ||
+        /SGC\s*\d+/i.test(c) ||
+        /CGC\s*[\d.]+/i.test(c) ||
+        /Grade\s*\d+/i.test(c)
+      );
+    }
+
+    const out = {
+      id: null as string | null,
       title: "",
-      console: null,
-      image: document.querySelector('meta[property="og:image"]')?.getAttribute("content") || null,
+      console: null as string | null,
+      image: null as string | null,
       tierText: "",
+      grades: [] as Array<{ grade: string; priceDisplay: string; priceUsd: number | null }>,
+      detailRows: [] as Array<{ label: string; value: string }>,
+      releaseDateRaw: null as string | null,
+      cardNumberRaw: null as string | null,
+      publisherRaw: null as string | null,
     };
+
+    out.image = document.querySelector('meta[property="og:image"]')?.getAttribute("content") || null;
     const h1 = document.querySelector("h1");
-    if (h1) out.title = (h1.textContent || "").trim();
+    if (h1) out.title = norm(h1.textContent);
+
     for (const a of document.querySelectorAll('a[href*="product="]')) {
       try {
         const u = new URL((a as HTMLAnchorElement).href, location.origin);
@@ -79,20 +144,117 @@ async function extractProductPage(page: import("playwright").Page, productUrl: s
       const m = document.documentElement.innerHTML.match(/product=(\d{4,})/);
       if (m) out.id = m[1]!;
     }
+
     const sub =
       document.querySelector(".product-details")?.querySelector("h2, .category") ||
       document.querySelector("[class*='console'], .subtitle");
-    if (sub) out.console = (sub.textContent || "").trim().slice(0, 500) || null;
+    if (sub) out.console = norm(sub.textContent).slice(0, 500) || null;
+
+    for (const dl of document.querySelectorAll("dl")) {
+      for (const dt of dl.querySelectorAll("dt")) {
+        const dd = dt.nextElementSibling;
+        if (dd && dd.tagName.toLowerCase() === "dd") {
+          const label = norm(dt.textContent).replace(/:\s*$/, "");
+          const value = norm(dd.textContent);
+          if (label && value) out.detailRows.push({ label, value: value.slice(0, 500) });
+        }
+      }
+    }
+
+    for (const tr of document.querySelectorAll("table tr")) {
+      const cells = tr.querySelectorAll("td,th");
+      if (cells.length !== 2) continue;
+      const a = norm(cells[0]!.textContent).replace(/:\s*$/, "");
+      const b = norm(cells[1]!.textContent);
+      if (a.length === 0 || b.length === 0 || a.length > 80) continue;
+      if (/release|card number|publisher|genre|console|developer/i.test(a)) {
+        out.detailRows.push({ label: a, value: b.slice(0, 500) });
+      }
+    }
+
+    function rowLabelMatch(pat: RegExp): string | null {
+      const row = out.detailRows.find((r) => pat.test(r.label));
+      return row ? row.value : null;
+    }
+
+    out.releaseDateRaw = rowLabelMatch(/^release date$/i);
+    out.cardNumberRaw = rowLabelMatch(/^card number$/i);
+    out.publisherRaw = rowLabelMatch(/^publisher$/i);
+
+    const bodyText = document.body?.innerText || "";
+    if (!out.releaseDateRaw) {
+      const br = bodyText.match(/Release Date\s*[:\n]\s*([^\n]+)/i);
+      if (br) out.releaseDateRaw = norm(br[1]).slice(0, 120);
+    }
+    if (!out.cardNumberRaw) {
+      const bc = bodyText.match(/Card Number\s*[:\n]\s*([^\n]+)/i);
+      if (bc) out.cardNumberRaw = norm(bc[1]).slice(0, 120);
+    }
+    if (!out.publisherRaw) {
+      const bp = bodyText.match(/Publisher\s*[:\n]\s*([^\n]+)/i);
+      if (bp) out.publisherRaw = norm(bp[1]).slice(0, 200);
+    }
+
+    const gradeMap = new Map<string, { grade: string; priceDisplay: string; priceUsd: number | null }>();
+
+    function addGrade(grade: string, priceDisplay: string) {
+      const g = norm(grade);
+      const pd = norm(priceDisplay);
+      if (!g || g.length > 80 || !/\$/.test(pd)) return;
+      const key = g.toLowerCase();
+      if (!gradeMap.has(key)) {
+        gradeMap.set(key, { grade: g, priceDisplay: pd, priceUsd: priceUsdFromText(pd) });
+      }
+    }
+
+    for (const table of document.querySelectorAll("table")) {
+      const txt = table.innerText || "";
+      if (!/\$/.test(txt)) continue;
+      if (!/Ungraded|PSA|Grade|BGS|CGC|SGC|\$\d/i.test(txt)) continue;
+
+      const rows = [...table.querySelectorAll("tr")];
+      const matrix = rows
+        .slice(0, 30)
+        .map((r) => [...r.querySelectorAll("th,td")].map((c) => norm(c.textContent)));
+
+      if (matrix.length >= 2) {
+        const header = matrix[0]!;
+        if (header.some((h) => isGradeLabel(h))) {
+          const priceRow = matrix.find((row) => row.some((c) => /\$\d/.test(c)));
+          if (priceRow) {
+            for (let i = 0; i < Math.min(header.length, priceRow.length); i++) {
+              const h = header[i]!;
+              const v = priceRow[i]!;
+              if (isGradeLabel(h) && /\$/.test(v)) addGrade(h, v);
+            }
+          }
+        }
+      }
+
+      for (const row of rows) {
+        const cells = [...row.querySelectorAll("th,td")].map((c) => norm(c.textContent));
+        if (cells.length < 2) continue;
+        const priceCell = cells[cells.length - 1]!;
+        const labelCell = cells[0]!;
+        if (!/\$/.test(priceCell)) continue;
+        if (!isGradeLabel(labelCell)) continue;
+        addGrade(labelCell, priceCell);
+      }
+    }
+
+    out.grades = [...gradeMap.values()];
 
     const tables = [...document.querySelectorAll("table")];
     for (const t of tables) {
-      const txt = t.innerText || "";
-      if (/\$/.test(txt) && /Ungraded|Grade\s*\d|PSA\s*10/i.test(txt)) {
-        out.tierText = txt.replace(/\s+/g, " ").trim().slice(0, 12000);
+      const ttxt = t.innerText || "";
+      if (/\$/.test(ttxt) && /Ungraded|Grade\s*\d|PSA\s*\d/i.test(ttxt)) {
+        out.tierText = ttxt.replace(/\s+/g, " ").trim().slice(0, 12000);
         break;
       }
     }
-    return { ...out, url };
+
+    void url;
+    return out;
   }, productUrl);
 }
 
@@ -200,15 +362,32 @@ async function runBatch(browser: Browser, pool: ReturnType<typeof createPool>) {
       }
       const urlObj = new URL(href);
       const slug = urlObj.pathname.split("/").filter(Boolean).pop() || "";
-      const tiers: Record<string, unknown> = { gridText: data.tierText };
-      const extras: Record<string, unknown> = { sourceUrl: href };
+      const title = normalizeProductTitle(data.title) || slug;
+      const releaseDate =
+        parsePgDate(data.releaseDateRaw) ||
+        parsePgDate(detailValue(data.detailRows, /release date/i));
+      const cardNumber =
+        nonEmpty(data.cardNumberRaw || detailValue(data.detailRows, /card number/i)) ||
+        extractCardFromTitle(title);
+      const publisher = nonEmpty(data.publisherRaw || detailValue(data.detailRows, /publisher/i));
+      const tiers: Record<string, unknown> = {
+        gridText: data.tierText,
+        grades: data.grades,
+      };
+      const extras: Record<string, unknown> = {
+        sourceUrl: href,
+        detailRows: data.detailRows.slice(0, 40),
+      };
       await upsertPcProduct(pool, {
         pcProductId: data.id,
         slug,
         productUrl: href,
-        title: data.title || slug,
+        title,
         consoleOrCategory: data.console,
         imageUrl: data.image,
+        cardNumber,
+        releaseDate,
+        publisher,
         tiers,
         extras,
         parseVersion: PARSE_VERSION,

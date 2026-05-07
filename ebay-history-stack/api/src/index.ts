@@ -79,6 +79,9 @@ app.get("/v1/pc/search", async (request) => {
        p.console_or_category AS "consoleOrCategory",
        p.product_url AS "productUrl",
        p.image_url AS "imageUrl",
+       p.card_number AS "cardNumber",
+       p.release_date AS "releaseDate",
+       p.publisher,
        s.tiers,
        s.observed_at AS "snapshotAt",
        s.parse_version AS "parseVersion"
@@ -91,6 +94,9 @@ app.get("/v1/pc/search", async (request) => {
        LIMIT 1
      ) s ON true
      WHERE p.title ILIKE $1 ESCAPE '\\'
+        OR p.console_or_category ILIKE $1 ESCAPE '\\'
+        OR p.card_number ILIKE $1 ESCAPE '\\'
+        OR p.publisher ILIKE $1 ESCAPE '\\'
      ORDER BY p.last_seen_at DESC
      LIMIT 50`,
     [pattern],
@@ -113,6 +119,9 @@ app.get<{ Params: { id: string } }>("/v1/pc/product/:id", async (request, reply)
        console_or_category AS "consoleOrCategory",
        product_url AS "productUrl",
        image_url AS "imageUrl",
+       card_number AS "cardNumber",
+       release_date AS "releaseDate",
+       publisher,
        first_seen_at AS "firstSeenAt",
        last_seen_at AS "lastSeenAt"
      FROM pc_products WHERE pc_product_id = $1::bigint`,
@@ -150,6 +159,9 @@ app.get("/v1/compare", async (request) => {
        p.console_or_category AS "consoleOrCategory",
        p.product_url AS "productUrl",
        p.image_url AS "imageUrl",
+       p.card_number AS "cardNumber",
+       p.release_date AS "releaseDate",
+       p.publisher,
        s.tiers,
        s.observed_at AS "snapshotAt",
        s.parse_version AS "parseVersion"
@@ -162,6 +174,9 @@ app.get("/v1/compare", async (request) => {
        LIMIT 1
      ) s ON true
      WHERE p.title ILIKE $1 ESCAPE '\\'
+        OR p.console_or_category ILIKE $1 ESCAPE '\\'
+        OR p.card_number ILIKE $1 ESCAPE '\\'
+        OR p.publisher ILIKE $1 ESCAPE '\\'
      ORDER BY p.last_seen_at DESC
      LIMIT 50`,
     [pattern],

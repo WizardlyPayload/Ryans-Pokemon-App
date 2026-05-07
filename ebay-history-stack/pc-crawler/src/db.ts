@@ -5,7 +5,7 @@ import pg from "pg";
 
 const { Pool } = pg;
 
-const MIGRATION_BASENAMES = ["001_init.sql", "002_pc_scrape.sql"];
+const MIGRATION_BASENAMES = ["001_init.sql", "002_pc_scrape.sql", "003_pc_product_metadata.sql"];
 const ADV_LOCK_K1 = 8129347;
 const ADV_LOCK_K2 = 291834;
 
@@ -67,20 +67,29 @@ export async function upsertPcProduct(
     title: string;
     consoleOrCategory: string | null;
     imageUrl: string | null;
+    cardNumber: string | null;
+    releaseDate: string | null;
+    publisher: string | null;
     tiers: Record<string, unknown>;
     extras: Record<string, unknown>;
     parseVersion: string;
   },
 ): Promise<void> {
   await pool.query(
-    `INSERT INTO pc_products (pc_product_id, slug, product_url, title, console_or_category, image_url, last_seen_at)
-     VALUES ($1::bigint, $2, $3, $4, $5, $6, now())
+    `INSERT INTO pc_products (
+       pc_product_id, slug, product_url, title, console_or_category, image_url,
+       card_number, release_date, publisher, last_seen_at
+     )
+     VALUES ($1::bigint, $2, $3, $4, $5, $6, $7, $8::date, $9, now())
      ON CONFLICT (pc_product_id) DO UPDATE SET
        slug = COALESCE(EXCLUDED.slug, pc_products.slug),
        product_url = EXCLUDED.product_url,
        title = EXCLUDED.title,
        console_or_category = COALESCE(EXCLUDED.console_or_category, pc_products.console_or_category),
        image_url = COALESCE(EXCLUDED.image_url, pc_products.image_url),
+       card_number = COALESCE(EXCLUDED.card_number, pc_products.card_number),
+       release_date = COALESCE(EXCLUDED.release_date, pc_products.release_date),
+       publisher = COALESCE(EXCLUDED.publisher, pc_products.publisher),
        last_seen_at = now()`,
     [
       row.pcProductId,
@@ -89,6 +98,9 @@ export async function upsertPcProduct(
       row.title,
       row.consoleOrCategory,
       row.imageUrl,
+      row.cardNumber,
+      row.releaseDate,
+      row.publisher,
     ],
   );
   await pool.query(
