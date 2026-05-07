@@ -1,4 +1,4 @@
-﻿# Setup & usage guide
+# Setup & usage guide
 
 **Use the copy on your C: drive as the project root in Cursor:**  
 `C:\Users\Graham\Documents\Ryans Pokemon App`  

@@ -1,4 +1,4 @@
-﻿mod ebay;
+mod ebay;
 mod history_api;
 mod pricecharting;
 mod types;

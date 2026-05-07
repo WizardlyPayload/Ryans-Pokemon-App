@@ -1,4 +1,4 @@
-﻿# eBay listing history stack (VPS)
+# eBay listing history stack (VPS)
 
 Playwright crawler + PostgreSQL + read-only JSON API. Designed for slow, sustained ingestion (~1000 pages/day configurable) with concurrent reads from your desktop app.
 
