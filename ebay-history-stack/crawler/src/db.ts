@@ -5,16 +5,21 @@ import pg from "pg";
 
 const { Pool } = pg;
 
-const DOCKER_SCHEMA = "/app/migrations/001_init.sql";
+const MIGRATION_BASENAMES = ["001_init.sql", "002_pc_scrape.sql"];
 
 const ADV_LOCK_K1 = 8129347;
 const ADV_LOCK_K2 = 291834;
 
-function resolveSchemaSqlPath(): string {
-  if (process.env.SCHEMA_SQL_PATH) return process.env.SCHEMA_SQL_PATH;
-  if (existsSync(DOCKER_SCHEMA)) return DOCKER_SCHEMA;
+function resolveMigrationPaths(): string[] {
+  if (process.env.SCHEMA_SQL_PATH) {
+    return [process.env.SCHEMA_SQL_PATH];
+  }
+  const dockerDir = "/app/migrations";
+  if (existsSync(join(dockerDir, "001_init.sql"))) {
+    return MIGRATION_BASENAMES.map((f) => join(dockerDir, f)).filter((p) => existsSync(p));
+  }
   const here = dirname(fileURLToPath(import.meta.url));
-  return join(here, "../../migrations/001_init.sql");
+  return MIGRATION_BASENAMES.map((f) => join(here, "../../migrations", f));
 }
 
 function migrationStatements(raw: string): string[] {
@@ -34,14 +39,17 @@ export function createPool(url: string) {
 
 /** Idempotent CREATE IF NOT EXISTS — runs before crawl loop (initdb.d skips existing volumes). */
 export async function ensureSchema(pool: pg.Pool): Promise<void> {
-  const sql = readFileSync(resolveSchemaSqlPath(), "utf8");
-  const statements = migrationStatements(sql);
+  const paths = resolveMigrationPaths();
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock($1, $2)", [ADV_LOCK_K1, ADV_LOCK_K2]);
-    for (const stmt of statements) {
-      await client.query(`${stmt};`);
+    for (const p of paths) {
+      const sql = readFileSync(p, "utf8");
+      const statements = migrationStatements(sql);
+      for (const stmt of statements) {
+        await client.query(`${stmt};`);
+      }
     }
     await client.query("COMMIT");
   } catch (e) {

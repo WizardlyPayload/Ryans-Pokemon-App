@@ -1,4 +1,4 @@
-# eBay listing history stack (VPS)
+﻿# eBay listing history stack (VPS)
 
 Playwright crawler + PostgreSQL + read-only JSON API. Designed for slow, sustained ingestion (~1000 pages/day configurable) with concurrent reads from your desktop app.
 
@@ -46,13 +46,27 @@ Playwright crawler + PostgreSQL + read-only JSON API. Designed for slow, sustain
    curl -s -H "Authorization: Bearer YOUR_API_KEY" "http://127.0.0.1:3001/v1/search?q=pikachu"
    ```
 
-## HTTPS (recommended)
+## Security baseline
 
-Put **Caddy** or **nginx** in front with TLS and proxy `/` to `127.0.0.1:3001`. Restrict exposure with a firewall if only you use it.
+- Keep PostgreSQL internal-only (do not publish `5432` publicly).
+- Expose only the API service and protect routes with `Authorization: Bearer API_KEY`.
+- Use firewall rules so only intended API traffic reaches your VPS.
 
 ## Desktop app (Tauri)
 
-In **pokemon-card-desktop**, set **History API base URL** (e.g. `https://your-domain/v1` or `http://vps-ip:3001/v1`) and **API key**, then use **Load history comps**. The Rust backend calls `GET /v1/search` on your API.
+In **pokemon-card-desktop**, you can now use two private VPS-backed panels:
+
+- **Recorded eBay sales** (`/v1/search`, `/v1/item/:id/history`)
+- **Scraped PriceCharting + compare** (`/v1/pc/search`, `/v1/compare`)
+
+Set these in `pokemon-card-desktop/.env`:
+
+```bash
+PC_API_BASE=https://your-vps.example.com:3001
+PC_API_KEY=YOUR_API_KEY
+```
+
+`PC_API_KEY` should match server `API_KEY`.
 
 ## Compliance
 
@@ -63,6 +77,7 @@ You are responsible for complying with eBay’s terms and applicable law. This s
 - Parses sold SERPs using **`div.s-card[data-listingid]`** (current eBay layout) and **`li.s-item`** (classic layout), deduped by item id.
 - **Empty SERP:** advances `_pgn` instead of resetting to page 0 (avoids spinning on the same URL). Wraps to page `0` after page `400`.
 - Docker image sets **`PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`** so the official Playwright image’s bundled Chromium is used (no duplicate browser download during `npm install`).
+- Includes **`pc-crawler`** service for private PriceCharting HTML scraping into `pc_products` and `pc_price_snapshots`.
 
 ## Stop / reset
 

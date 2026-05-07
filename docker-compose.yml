@@ -10,8 +10,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./ebay-history-stack/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+    # Keep Postgres internal-only. Do not publish 5432 publicly.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ebayhist -d ebay_history"]
       interval: 5s

@@ -11,5 +11,5 @@ WORKDIR /app
 COPY api/package.json ./
 RUN npm install --omit=dev
 COPY --from=build /app/dist ./dist
-COPY migrations/001_init.sql /app/migrations/001_init.sql
+COPY migrations/ ./migrations/
 CMD ["node", "dist/index.js"]

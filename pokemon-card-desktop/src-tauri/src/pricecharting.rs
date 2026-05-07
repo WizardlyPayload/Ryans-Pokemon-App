@@ -96,14 +96,17 @@ pub fn product_details_from_json(body: &Value, id: &str) -> ProductDetails {
             .or_else(|| as_str(&body["image"]))
             .or_else(|| as_str(&body["thumbnail-url"])),
     );
-    let enc = urlencoding::encode(&product_name);
+    let pricecharting_search_url = format!(
+        "https://www.pricecharting.com/search-products?q={}",
+        urlencoding::encode(product_name.as_str()),
+    );
     ProductDetails {
         id: id.to_string(),
         product_name,
         console_name,
         genre,
         image_url,
-        pricecharting_search_url: format!("https://www.pricecharting.com/search-products?q={}", enc),
+        pricecharting_search_url,
     }
 }
 

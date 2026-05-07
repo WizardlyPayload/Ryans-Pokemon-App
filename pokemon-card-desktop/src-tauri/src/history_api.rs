@@ -1,5 +1,6 @@
 use crate::types::{HistoryItemDetail, HistorySearchSnapshot};
 use reqwest::Client;
+use serde::de::DeserializeOwned;
 
 fn normalize_api_base(base: &str) -> String {
     let mut s = base.trim().trim_end_matches('/').to_string();
@@ -8,6 +9,20 @@ fn normalize_api_base(base: &str) -> String {
         s = s.trim_end_matches('/').to_string();
     }
     s
+}
+
+fn truncate_body_hint(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).chars().take(400).collect()
+}
+
+fn decode_json_body<T: DeserializeOwned>(bytes: &[u8], label: &str) -> Result<T, String> {
+    serde_json::from_slice(bytes).map_err(|e| {
+        format!(
+            "{} — {e}. First bytes of response: {}",
+            label,
+            truncate_body_hint(bytes)
+        )
+    })
 }
 
 pub async fn fetch_history_search(
@@ -38,14 +53,21 @@ pub async fn fetch_history_search(
         .send()
         .await
         .map_err(|e| format!("History API request failed: {e}"))?;
-    if !res.status().is_success() {
-        let status = res.status();
-        let body = res.text().await.unwrap_or_default();
-        return Err(format!("History API error HTTP {status}: {body}"));
-    }
-    res.json::<HistorySearchSnapshot>()
+    let status = res.status();
+    let bytes = res
+        .bytes()
         .await
-        .map_err(|e| format!("History API JSON: {e}"))
+        .map_err(|e| format!("History API: read body failed: {e}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "History API HTTP {status}: {}",
+            truncate_body_hint(&bytes)
+        ));
+    }
+    decode_json_body::<HistorySearchSnapshot>(
+        &bytes,
+        "History API response is not the expected JSON (check API base URL and that the server is ebay-history-stack Fastify, not another site)",
+    )
 }
 
 pub async fn fetch_item_history(
@@ -72,12 +94,19 @@ pub async fn fetch_item_history(
         .send()
         .await
         .map_err(|e| format!("History API request failed: {e}"))?;
-    if !res.status().is_success() {
-        let status = res.status();
-        let body = res.text().await.unwrap_or_default();
-        return Err(format!("History API error HTTP {status}: {body}"));
-    }
-    res.json::<HistoryItemDetail>()
+    let status = res.status();
+    let bytes = res
+        .bytes()
         .await
-        .map_err(|e| format!("History API JSON: {e}"))
+        .map_err(|e| format!("History API: read body failed: {e}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "History API HTTP {status}: {}",
+            truncate_body_hint(&bytes)
+        ));
+    }
+    decode_json_body::<HistoryItemDetail>(
+        &bytes,
+        "History API response is not the expected JSON (check URL and server)",
+    )
 }

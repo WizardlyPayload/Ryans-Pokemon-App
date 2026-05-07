@@ -204,8 +204,7 @@ function normalizePriceText(raw) {
     if (!raw?.trim())
         return "";
     let t = raw.replace(/\s+/g, " ").trim();
-    t = t.replace(/(?<=[\d.,])(or\s*best\s*offer)\s*$/i, "");
-    t = t.replace(/\s*or\s*best\s*offer\s*$/i, "");
+    t = t.replace(/\s*or\s*best\s*offer\b/gi, "");
     t = t.replace(/\s*\+\s*shipping.*$/i, "");
     t = t.replace(/\s+/g, " ").trim();
     return t;

@@ -6,6 +6,6 @@ COPY crawler/package.json ./
 RUN npm install
 COPY crawler/tsconfig.json ./
 COPY crawler/src ./src
-COPY migrations/001_init.sql /app/migrations/001_init.sql
+COPY migrations/ ./migrations/
 RUN npx tsc
 CMD ["node", "dist/index.js"]

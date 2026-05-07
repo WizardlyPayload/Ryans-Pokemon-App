@@ -1,10 +1,14 @@
-mod ebay;
+﻿mod ebay;
 mod history_api;
 mod pricecharting;
 mod types;
+mod vps_pc_api;
 
 use reqwest::Client;
-use types::{CardLoadout, HistoryItemDetail, HistorySearchSnapshot, ProductSummary};
+use types::{
+    CardLoadout, HistoryItemDetail, HistorySearchSnapshot, MarketCompareSnapshot, PcProductDetailResponse,
+    PcSearchSnapshot, ProductSummary, VpsPcEnv,
+};
 
 pub struct HttpClient(pub Client);
 
@@ -97,6 +101,89 @@ async fn history_item_vps(
     history_api::fetch_item_history(&client.0, api_base, api_key, ebay_item_id).await
 }
 
+fn resolve_vps_pc_base(override_opt: Option<String>) -> Result<String, String> {
+    let o = override_opt
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if let Some(s) = o {
+        return Ok(s);
+    }
+    let s = std::env::var("PC_API_BASE")
+        .map_err(|_| "Set PC_API_BASE in pokemon-card-desktop/.env or enter it in the form.".to_string())?
+        .trim()
+        .to_string();
+    if s.is_empty() {
+        return Err("PC_API_BASE is empty.".into());
+    }
+    Ok(s)
+}
+
+fn resolve_vps_pc_key(override_opt: Option<String>) -> Result<String, String> {
+    let o = override_opt
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if let Some(s) = o {
+        return Ok(s);
+    }
+    let s = std::env::var("PC_API_KEY")
+        .map_err(|_| "Set PC_API_KEY in .env (same value as server API_KEY) or enter it in the form.".to_string())?
+        .trim()
+        .to_string();
+    if s.is_empty() {
+        return Err("PC_API_KEY is empty.".into());
+    }
+    Ok(s)
+}
+
+#[tauri::command]
+fn pc_api_pc_env() -> VpsPcEnv {
+    VpsPcEnv {
+        api_base: std::env::var("PC_API_BASE")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        has_api_key: std::env::var("PC_API_KEY")
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false),
+    }
+}
+
+#[tauri::command]
+async fn pc_api_pc_search(
+    query: String,
+    api_base: Option<String>,
+    api_key: Option<String>,
+    client: tauri::State<'_, HttpClient>,
+) -> Result<PcSearchSnapshot, String> {
+    let base = resolve_vps_pc_base(api_base)?;
+    let key = resolve_vps_pc_key(api_key)?;
+    vps_pc_api::fetch_pc_search(&client.0, base, key, query).await
+}
+
+#[tauri::command]
+async fn pc_api_pc_product(
+    product_id: String,
+    api_base: Option<String>,
+    api_key: Option<String>,
+    client: tauri::State<'_, HttpClient>,
+) -> Result<PcProductDetailResponse, String> {
+    let base = resolve_vps_pc_base(api_base)?;
+    let key = resolve_vps_pc_key(api_key)?;
+    vps_pc_api::fetch_pc_product(&client.0, base, key, product_id).await
+}
+
+#[tauri::command]
+async fn pc_api_market_compare(
+    query: String,
+    api_base: Option<String>,
+    api_key: Option<String>,
+    client: tauri::State<'_, HttpClient>,
+) -> Result<MarketCompareSnapshot, String> {
+    let base = resolve_vps_pc_base(api_base)?;
+    let key = resolve_vps_pc_key(api_key)?;
+    vps_pc_api::fetch_market_compare(&client.0, base, key, query).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     dotenvy::dotenv().ok();
@@ -113,7 +200,12 @@ pub fn run() {
             load_card,
             history_search_vps,
             history_item_vps,
+            pc_api_pc_env,
+            pc_api_pc_search,
+            pc_api_pc_product,
+            pc_api_market_compare,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+

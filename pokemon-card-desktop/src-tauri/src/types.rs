@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+﻿use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -86,6 +86,71 @@ pub struct HistorySearchRow {
 pub struct HistoryItemDetail {
     pub ebay_item_id: String,
     pub history: Vec<HistoryObservationRow>,
+}
+
+/// VPS env exposed to UI (no secret values).
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct VpsPcEnv {
+    pub api_base: Option<String>,
+    pub has_api_key: bool,
+}
+
+/// GET /v1/pc/search (scraped PriceCharting cache on VPS).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PcSearchSnapshot {
+    pub query: String,
+    pub results: Vec<PcSearchRow>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PcSearchRow {
+    pub pc_product_id: String,
+    pub title: String,
+    pub console_or_category: Option<String>,
+    pub product_url: String,
+    pub image_url: Option<String>,
+    pub tiers: serde_json::Value,
+    pub snapshot_at: Option<String>,
+    pub parse_version: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PcProductDetailProduct {
+    pub pc_product_id: String,
+    pub title: String,
+    pub console_or_category: Option<String>,
+    pub product_url: String,
+    pub image_url: Option<String>,
+    pub first_seen_at: Option<String>,
+    pub last_seen_at: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PcLatestSnapshot {
+    pub tiers: serde_json::Value,
+    pub extras: Option<serde_json::Value>,
+    pub observed_at: Option<String>,
+    pub parse_version: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PcProductDetailResponse {
+    pub product: PcProductDetailProduct,
+    pub latest_snapshot: Option<PcLatestSnapshot>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketCompareSnapshot {
+    pub query: String,
+    pub pricecharting: PcSearchSnapshot,
+    pub ebay: HistorySearchSnapshot,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

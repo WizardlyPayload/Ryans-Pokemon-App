@@ -1,12 +1,20 @@
 ---
-description: This repo lives on C — do not use Z drive copy
+description: Canonical repo on C — never edit Z (backup); sync Z only after major milestones
 alwaysApply: true
 ---
 
-# Canonical project root
+# Canonical project root (always)
 
-This repository’s working copy is:
+**Working copy:** `C:\Users\Graham\Documents\Ryans Pokemon App`
 
-`C:\Users\Graham\Documents\Ryans Pokemon App`
+- Run terminal commands, edits, installs, and builds **only** under this path (and other explicit `C:\` paths the user names).
 
-Use only this tree for edits and terminal commands. Do not use `Z:\Ryans Pokemon App`.
+## `Z:\Ryans Pokemon App` — backup only
+
+- **Do not** create, edit, delete, or copy files to `Z:\`.
+- **Do not** run `git` writes, `npm install`, or builds targeting `Z:\` unless the user explicitly asks for a one-off backup sync.
+- Treat `Z:\` as a **mirror/backup** the user refreshes **after major revisions or milestones** — not part of day-to-day agent work.
+
+## If Cursor’s workspace is on `Z:\`
+
+Still apply all changes under **`C:\Users\Graham\Documents\Ryans Pokemon App`** using full paths. Do not assume the open folder is the write target.

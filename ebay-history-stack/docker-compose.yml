@@ -9,8 +9,8 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - ./migrations/002_pc_scrape.sql:/docker-entrypoint-initdb.d/002_pc_scrape.sql:ro
+    # Keep Postgres internal-only. Do not publish 5432 publicly.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ebayhist -d ebay_history"]
       interval: 5s
@@ -52,7 +52,25 @@ services:
       MAX_DELAY_MS: ${MAX_DELAY_MS:-45000}
       PARSE_VERSION: "1"
       US_SEED_URL: ${US_SEED_URL:-https://www.ebay.com/sch/i.html?_sacat=31392&LH_Sold=1&LH_Complete=1&_ipg=60&rt=nc}
-      UK_SEED_URL: ${UK_SEED_URL:-https://www.ebay.co.uk/sch/i.html?_nkw=pokemon+card&LH_Sold=1&LH_Complete=1&_ipg=60&rt=nc}
+      UK_SEED_URL: ${UK_SEED_URL:-https://www.ebay.co.uk/sch/i.html?_sacat=0&LH_Sold=1&LH_Complete=1&_ipg=60&rt=nc}
+
+  pc-crawler:
+    build:
+      context: .
+      dockerfile: pc-crawler/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://ebayhist:${POSTGRES_PASSWORD:-ebayhist_dev_change_me}@postgres:5432/ebay_history
+      PC_CRAWLER_ENABLED: ${PC_CRAWLER_ENABLED:-true}
+      PC_SEARCH_QUERY: ${PC_SEARCH_QUERY:-pikachu}
+      PC_PRODUCTS_PER_RUN: ${PC_PRODUCTS_PER_RUN:-15}
+      PC_MIN_DELAY_MS: ${PC_MIN_DELAY_MS:-3000}
+      PC_MAX_DELAY_MS: ${PC_MAX_DELAY_MS:-14000}
+      PC_LOOP_INTERVAL_MS: ${PC_LOOP_INTERVAL_MS:-3600000}
+      PARSE_VERSION: ${PC_PARSE_VERSION:-1}
 
 volumes:
   postgres_data:
