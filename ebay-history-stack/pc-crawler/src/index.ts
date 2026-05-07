@@ -13,8 +13,18 @@ const PC_MIN_DELAY_MS = Math.max(500, Number(process.env.PC_MIN_DELAY_MS || 3000
 const PC_MAX_DELAY_MS = Math.max(PC_MIN_DELAY_MS, Number(process.env.PC_MAX_DELAY_MS || 14000));
 const PC_LOOP_INTERVAL_MS = Math.max(60_000, Number(process.env.PC_LOOP_INTERVAL_MS || 3_600_000));
 const PARSE_VERSION = process.env.PARSE_VERSION || "1";
+/** "prices" = price-guide search (card/product links). Set to "off" to omit. */
+const PC_SEARCH_TYPE = (process.env.PC_SEARCH_TYPE ?? "prices").trim().toLowerCase();
 
 const PC_BASE = "https://www.pricecharting.com";
+
+function buildPcSearchUrl(query: string): string {
+  const q = encodeURIComponent(query);
+  if (!PC_SEARCH_TYPE || PC_SEARCH_TYPE === "off") {
+    return `${PC_BASE}/search-products?q=${q}`;
+  }
+  return `${PC_BASE}/search-products?q=${q}&type=${encodeURIComponent(PC_SEARCH_TYPE)}`;
+}
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -87,23 +97,79 @@ async function extractProductPage(page: import("playwright").Page, productUrl: s
 }
 
 async function collectGameLinks(page: import("playwright").Page, searchUrl: string): Promise<string[]> {
-  await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 90_000 });
+  await page.goto(searchUrl, { waitUntil: "load", timeout: 90_000 });
   await sleep(randBetween(800, 2000));
-  const hrefs = await page.$$eval('a[href*="/game/"]', (anchors) => {
+  try {
+    await page.waitForSelector('a[href*="/game/"]', { timeout: 60_000 });
+  } catch {
+    /* hydrate / bot page — try scroll + HTML fallback below */
+  }
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await sleep(randBetween(400, 1200));
+
+  const hrefsFromDom = await page.$$eval("a[href]", (anchors) => {
     const set = new Set<string>();
+    const origin = "https://www.pricecharting.com";
     for (const a of anchors) {
-      const h = (a as HTMLAnchorElement).href;
-      if (h.includes("pricecharting.com") && /\/game\//.test(h)) {
-        set.add(h.split("#")[0]!);
+      const raw = (a as HTMLAnchorElement).getAttribute("href") || "";
+      if (!raw.includes("/game/")) continue;
+      try {
+        const u = new URL(raw, origin);
+        if (!u.hostname.endsWith("pricecharting.com")) continue;
+        if (!u.pathname.includes("/game/")) continue;
+        const canon = `${u.origin}${u.pathname}${u.search}`.split("#")[0]!;
+        set.add(canon);
+      } catch {
+        /* skip */
       }
     }
     return [...set];
   });
-  return hrefs;
+
+  if (hrefsFromDom.length > 0) {
+    return hrefsFromDom;
+  }
+
+  const html = await page.content();
+  const fromHtml = new Set<string>();
+  const absRe = /https?:\/\/(?:www\.)?pricecharting\.com\/game\/[^"'>\s]+/gi;
+  let m: RegExpExecArray | null;
+  while ((m = absRe.exec(html)) !== null) {
+    fromHtml.add(m[0].replace(/&amp;/g, "&").split("#")[0]!);
+  }
+  const relRe = /(?:href|\shref)=["'](\/game\/[^"'#]+)/gi;
+  while ((m = relRe.exec(html)) !== null) {
+    const path = m[1]!.replace(/&amp;/g, "&");
+    try {
+      const u = new URL(path, PC_BASE);
+      fromHtml.add(`${u.origin}${u.pathname}${u.search}`.split("#")[0]!);
+    } catch {
+      /* skip */
+    }
+  }
+
+  if (fromHtml.size === 0) {
+    const probe = await page.evaluate(() => ({
+      title: document.title,
+      anchorCount: document.querySelectorAll("a").length,
+      bodyTextLen: (document.body?.innerText || "").length,
+    }));
+    console.log(
+      JSON.stringify({
+        msg: "pc_search_no_links",
+        searchUrl,
+        ...probe,
+        hint:
+          "No /game/ links in DOM or HTML. Often blocked/challenge page, or results still loading — check VPS IP / add wait.",
+      }),
+    );
+  }
+
+  return [...fromHtml];
 }
 
 async function runBatch(browser: Browser, pool: ReturnType<typeof createPool>) {
-  const searchUrl = `${PC_BASE}/search-products?q=${encodeURIComponent(PC_SEARCH_QUERY)}`;
+  const searchUrl = buildPcSearchUrl(PC_SEARCH_QUERY);
   const ctx: BrowserContext = await browser.newContext({
     userAgent:
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -112,7 +178,15 @@ async function runBatch(browser: Browser, pool: ReturnType<typeof createPool>) {
   const page = await ctx.newPage();
   try {
     const links = await collectGameLinks(page, searchUrl);
-    console.log(JSON.stringify({ msg: "pc_search_links", query: PC_SEARCH_QUERY, count: links.length }));
+    console.log(
+      JSON.stringify({
+        msg: "pc_search_links",
+        query: PC_SEARCH_QUERY,
+        searchUrl,
+        searchType: PC_SEARCH_TYPE || null,
+        count: links.length,
+      }),
+    );
     const slice = links.slice(0, PC_PRODUCTS_PER_RUN);
     let stored = 0;
     for (const href of slice) {
@@ -161,6 +235,7 @@ async function main() {
       msg: "pc_crawler_start",
       enabled: PC_CRAWLER_ENABLED,
       searchQuery: PC_SEARCH_QUERY,
+      searchType: PC_SEARCH_TYPE || null,
       productsPerRun: PC_PRODUCTS_PER_RUN,
       loopIntervalMs: PC_LOOP_INTERVAL_MS,
       parseVersion: PARSE_VERSION,
