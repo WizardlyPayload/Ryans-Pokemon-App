@@ -230,7 +230,7 @@ app.get("/v1/unified-search", async (request) => {
        o.ebay_item_id::text AS "ebayItemId",
        o.title,
        o.price_text AS "priceDisplay",
-       ${PRICE_NUMERIC_SQL} AS "priceValue",
+       (${PRICE_NUMERIC_SQL})::double precision AS "priceValue",
        o.market,
        o.observed_at AS "observedAt",
        o.page_url AS "pageUrl"
