@@ -8,7 +8,12 @@ chromium.use(StealthPlugin());
 const DATABASE_URL = process.env.DATABASE_URL;
 const PC_CRAWLER_ENABLED = (process.env.PC_CRAWLER_ENABLED || "true").toLowerCase() === "true";
 const PC_SEARCH_QUERY = (process.env.PC_SEARCH_QUERY || "pikachu").trim();
-const PC_PRODUCTS_PER_RUN = Math.max(1, Number(process.env.PC_PRODUCTS_PER_RUN || 15));
+/** 0 = no cap (crawl all links discovered this run). */
+const PC_PRODUCTS_PER_RUN = Math.max(0, Number(process.env.PC_PRODUCTS_PER_RUN || 0));
+/** 0 = crawl pages until no links (bounded by PC_SEARCH_MAX_PAGES). */
+const PC_SEARCH_PAGES_PER_RUN = Math.max(0, Number(process.env.PC_SEARCH_PAGES_PER_RUN || 0));
+/** Safety bound so "whole site" mode cannot loop forever. */
+const PC_SEARCH_MAX_PAGES = Math.max(1, Number(process.env.PC_SEARCH_MAX_PAGES || 500));
 const PC_MIN_DELAY_MS = Math.max(500, Number(process.env.PC_MIN_DELAY_MS || 3000));
 const PC_MAX_DELAY_MS = Math.max(PC_MIN_DELAY_MS, Number(process.env.PC_MAX_DELAY_MS || 14000));
 const PC_LOOP_INTERVAL_MS = Math.max(60_000, Number(process.env.PC_LOOP_INTERVAL_MS || 3_600_000));
@@ -18,12 +23,13 @@ const PC_SEARCH_TYPE = (process.env.PC_SEARCH_TYPE ?? "prices").trim().toLowerCa
 
 const PC_BASE = "https://www.pricecharting.com";
 
-function buildPcSearchUrl(query: string): string {
+function buildPcSearchUrl(query: string, page = 1): string {
   const q = encodeURIComponent(query);
+  const pageParam = page > 1 ? `&page=${page}` : "";
   if (!PC_SEARCH_TYPE || PC_SEARCH_TYPE === "off") {
-    return `${PC_BASE}/search-products?q=${q}`;
+    return `${PC_BASE}/search-products?q=${q}${pageParam}`;
   }
-  return `${PC_BASE}/search-products?q=${q}&type=${encodeURIComponent(PC_SEARCH_TYPE)}`;
+  return `${PC_BASE}/search-products?q=${q}&type=${encodeURIComponent(PC_SEARCH_TYPE)}${pageParam}`;
 }
 
 function sleep(ms: number) {
@@ -351,7 +357,6 @@ async function collectGameLinks(page: import("playwright").Page, searchUrl: stri
 }
 
 async function runBatch(browser: Browser, pool: ReturnType<typeof createPool>) {
-  const searchUrl = buildPcSearchUrl(PC_SEARCH_QUERY);
   const ctx: BrowserContext = await browser.newContext({
     userAgent:
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -359,17 +364,36 @@ async function runBatch(browser: Browser, pool: ReturnType<typeof createPool>) {
   });
   const page = await ctx.newPage();
   try {
-    const links = await collectGameLinks(page, searchUrl);
+    const allLinks: string[] = [];
+    const seen = new Set<string>();
+    let pagesVisited = 0;
+    for (let searchPage = 1; searchPage <= PC_SEARCH_MAX_PAGES; searchPage++) {
+      if (PC_SEARCH_PAGES_PER_RUN > 0 && searchPage > PC_SEARCH_PAGES_PER_RUN) break;
+      const searchUrl = buildPcSearchUrl(PC_SEARCH_QUERY, searchPage);
+      const links = await collectGameLinks(page, searchUrl);
+      pagesVisited += 1;
+      for (const href of links) {
+        if (!seen.has(href)) {
+          seen.add(href);
+          allLinks.push(href);
+        }
+      }
+      if (links.length === 0) break;
+    }
+
+    const effectiveCap = PC_PRODUCTS_PER_RUN > 0 ? PC_PRODUCTS_PER_RUN : allLinks.length;
+    const slice = allLinks.slice(0, effectiveCap);
     console.log(
       JSON.stringify({
         msg: "pc_search_links",
         query: PC_SEARCH_QUERY,
-        searchUrl,
+        searchUrl: buildPcSearchUrl(PC_SEARCH_QUERY, 1),
         searchType: PC_SEARCH_TYPE || null,
-        count: links.length,
+        count: allLinks.length,
+        pagesVisited,
+        cappedTo: effectiveCap,
       }),
     );
-    const slice = links.slice(0, PC_PRODUCTS_PER_RUN);
     let stored = 0;
     for (const href of slice) {
       await sleep(randBetween(PC_MIN_DELAY_MS, PC_MAX_DELAY_MS));
@@ -436,6 +460,8 @@ async function main() {
       searchQuery: PC_SEARCH_QUERY,
       searchType: PC_SEARCH_TYPE || null,
       productsPerRun: PC_PRODUCTS_PER_RUN,
+      searchPagesPerRun: PC_SEARCH_PAGES_PER_RUN,
+      searchMaxPages: PC_SEARCH_MAX_PAGES,
       loopIntervalMs: PC_LOOP_INTERVAL_MS,
       parseVersion: PARSE_VERSION,
     }),
