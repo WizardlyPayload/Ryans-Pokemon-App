@@ -46,7 +46,7 @@ services:
     environment:
       DATABASE_URL: postgres://ebayhist:${POSTGRES_PASSWORD:-ebayhist_dev_change_me}@postgres:5432/ebay_history
       CRAWLER_ENABLED: ${CRAWLER_ENABLED:-true}
-      GLOBAL_PAGES_PER_DAY: ${GLOBAL_PAGES_PER_DAY:-1000}
+      GLOBAL_PAGES_PER_DAY: ${GLOBAL_PAGES_PER_DAY:-5000}
       US_SHARE: ${US_SHARE:-0.5}
       UK_SHARE: ${UK_SHARE:-0.5}
       MIN_DELAY_MS: ${MIN_DELAY_MS:-8000}
@@ -67,7 +67,7 @@ services:
       DATABASE_URL: postgres://ebayhist:${POSTGRES_PASSWORD:-ebayhist_dev_change_me}@postgres:5432/ebay_history
       PC_CRAWLER_ENABLED: ${PC_CRAWLER_ENABLED:-true}
       PC_SEARCH_QUERY: ${PC_SEARCH_QUERY:-pikachu}
-      PC_PRODUCTS_PER_RUN: ${PC_PRODUCTS_PER_RUN:-15}
+      PC_PRODUCTS_PER_RUN: ${PC_PRODUCTS_PER_RUN:-0}
       PC_MIN_DELAY_MS: ${PC_MIN_DELAY_MS:-3000}
       PC_MAX_DELAY_MS: ${PC_MAX_DELAY_MS:-14000}
       PC_LOOP_INTERVAL_MS: ${PC_LOOP_INTERVAL_MS:-3600000}
