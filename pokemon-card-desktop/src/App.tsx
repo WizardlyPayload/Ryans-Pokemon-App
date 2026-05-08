@@ -178,6 +178,100 @@ function pickReferenceCents(card: CardLoadout): number | null {
   return null;
 }
 
+type PcProductDetailProduct = {
+  pcProductId: string;
+  title: string;
+  consoleOrCategory?: string | null;
+  productUrl: string;
+  imageUrl?: string | null;
+  cardNumber?: string | null;
+  releaseDate?: string | null;
+  publisher?: string | null;
+  firstSeenAt?: string | null;
+  lastSeenAt?: string | null;
+};
+
+type PcLatestSnapshot = {
+  tiers: Record<string, unknown>;
+  extras?: Record<string, unknown> | null;
+  observedAt?: string | null;
+  parseVersion?: string | null;
+};
+
+type PcProductDetailResponse = {
+  product: PcProductDetailProduct;
+  latestSnapshot?: PcLatestSnapshot | null;
+};
+
+function tierKeyFromScrapedGrade(label: string, index: number): string {
+  const L = label.trim();
+  if (/ungraded/i.test(L)) return "loose";
+  if (/psa\s*10\b/i.test(L)) return "graded:psa10";
+  if (/psa\s*9\b/i.test(L)) return "graded:psa9";
+  if (/bgs\s*10\b/i.test(L)) return "graded:bgs10";
+  return `scraped-${index}`;
+}
+
+function mapVpsProductToCardLoadout(detail: PcProductDetailResponse): CardLoadout {
+  const p = detail.product;
+  const snap = detail.latestSnapshot;
+  const tiersJson = snap?.tiers;
+  let grades: Array<{ grade?: string; priceDisplay?: string; priceUsd?: number | null }> = [];
+  if (
+    tiersJson &&
+    typeof tiersJson === "object" &&
+    "grades" in tiersJson &&
+    Array.isArray((tiersJson as { grades: unknown }).grades)
+  ) {
+    grades = (tiersJson as { grades: typeof grades }).grades;
+  }
+
+  const tierViews: TierView[] = grades.map((g, i) => {
+    const label = g.grade ?? `Tier ${i + 1}`;
+    const pcUsd = g.priceUsd;
+    const cents =
+      pcUsd != null && Number.isFinite(Number(pcUsd)) ? Math.round(Number(pcUsd) * 100) : null;
+    return {
+      tierKey: tierKeyFromScrapedGrade(label, i),
+      label,
+      priceField: "scrapedGuide",
+      priceCents: cents,
+      conditionId: null,
+      sold: [],
+      soldSectionNote: undefined,
+    };
+  });
+
+  let genre: string | undefined;
+  const ex = snap?.extras;
+  if (ex && typeof ex === "object" && Array.isArray((ex as { detailRows?: unknown }).detailRows)) {
+    const rows = (ex as { detailRows: Array<{ label?: string; value?: string }> }).detailRows;
+    const row = rows.find((r) => /genre/i.test(String(r.label)));
+    genre = row?.value?.trim();
+  }
+
+  const metaBits = [p.cardNumber, p.releaseDate, p.publisher].filter(Boolean).join(" · ");
+  const warnings: string[] = [
+    "Prices from your private VPS scrape (cached HTML), not the live PriceCharting API.",
+    ...(metaBits ? [`Catalog: ${metaBits}`] : []),
+    "eBay active listings were not loaded (add EBAY_CLIENT_ID / EBAY_CLIENT_SECRET for live comps).",
+  ];
+
+  return {
+    product: {
+      id: p.pcProductId,
+      productName: p.title,
+      consoleName: p.consoleOrCategory ?? "",
+      genre,
+      imageUrl: p.imageUrl ?? undefined,
+      pricechartingSearchUrl: p.productUrl,
+    },
+    tiers: tierViews,
+    ebayActive: [],
+    warnings,
+  };
+}
+
 function loadBasket(): BasketRow[] {
   try {
     const raw = localStorage.getItem(BASKET_KEY);
@@ -226,6 +320,7 @@ export default function App() {
   const [loadingCard, setLoadingCard] = useState(false);
   const [hits, setHits] = useState<ProductSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [lookupSource, setLookupSource] = useState<"vps" | "official" | null>(null);
   const [card, setCard] = useState<CardLoadout | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showAbout, setShowAbout] = useState(false);
@@ -415,12 +510,13 @@ export default function App() {
     }
   }
 
-  const loadDetails = useCallback(async (productId: string) => {
+  const loadDetailsOfficial = useCallback(async (productId: string) => {
     setLoadingCard(true);
     setError(null);
     setCard(null);
     try {
       const data = await invoke<CardLoadout>("load_card", { productId });
+      setLookupSource("official");
       setCard(data);
     } catch (e) {
       setError(String(e));
@@ -429,19 +525,85 @@ export default function App() {
     }
   }, []);
 
+  const loadDetailsVps = useCallback(
+    async (pcProductId: string) => {
+      setLoadingCard(true);
+      setError(null);
+      setCard(null);
+      persistpcApiSettings();
+      try {
+        const baseArg = pcApiApiBase.trim() || undefined;
+        const keyArg = pcApiApiKey.trim() || undefined;
+        const detail = await invoke<PcProductDetailResponse>("pc_api_pc_product", {
+          productId: pcProductId,
+          apiBase: baseArg ?? null,
+          apiKey: keyArg ?? null,
+        });
+        setLookupSource("vps");
+        setCard(mapVpsProductToCardLoadout(detail));
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setLoadingCard(false);
+      }
+    },
+    [pcApiApiBase, pcApiApiKey],
+  );
+
   const runPriceChartingSearch = useCallback(async (q: string) => {
     setSearching(true);
     setError(null);
     setCard(null);
     setSelectedId(null);
     setHits([]);
+    setLookupSource(null);
+
+    const canTryVps =
+      (pcApiApiBase.trim().length > 0 || pcApiEnvHint.hasEnvBase) &&
+      (pcApiApiKey.trim().length > 0 || pcApiEnvHint.hasEnvKey);
+
+    if (canTryVps) {
+      persistpcApiSettings();
+      try {
+        const baseArg = pcApiApiBase.trim() || undefined;
+        const keyArg = pcApiApiKey.trim() || undefined;
+        const snap = await invoke<PcSearchSnapshot>("pc_api_pc_search", {
+          query: q,
+          apiBase: baseArg ?? null,
+          apiKey: keyArg ?? null,
+        });
+        if (snap.results.length > 0) {
+          setLookupSource("vps");
+          setHits(
+            snap.results.map((r) => ({
+              id: r.pcProductId,
+              productName: r.title,
+              consoleName: r.consoleOrCategory ?? "",
+            })),
+          );
+          if (snap.results.length === 1) {
+            const id = snap.results[0].pcProductId;
+            setSelectedId(id);
+            await loadDetailsVps(id);
+          }
+          setSearching(false);
+          return;
+        }
+      } catch (e) {
+        setError(`VPS scrape cache: ${String(e)}`);
+        setSearching(false);
+        return;
+      }
+    }
+
     try {
       const results = await invoke<ProductSummary[]>("pc_search_products", { query: q });
+      setLookupSource("official");
       setHits(results);
       if (results.length === 1) {
         const id = results[0].id;
         setSelectedId(id);
-        await loadDetails(id);
+        await loadDetailsOfficial(id);
       }
     } catch (e) {
       setError(String(e));
@@ -449,7 +611,14 @@ export default function App() {
     } finally {
       setSearching(false);
     }
-  }, [loadDetails]);
+  }, [
+    pcApiApiBase,
+    pcApiApiKey,
+    pcApiEnvHint.hasEnvBase,
+    pcApiEnvHint.hasEnvKey,
+    loadDetailsVps,
+    loadDetailsOfficial,
+  ]);
 
   const getCardValue = useCallback(async () => {
     const q = composedQuery;
@@ -535,7 +704,7 @@ export default function App() {
     if (!card) return;
     const label = [
       card.product.productName,
-      setName.trim() && `Â· ${setName.trim()}`,
+      setName.trim() && ` · ${setName.trim()}`,
       cardNumber.trim() && `#${cardNumber.trim()}`,
       variantNotes.trim() && `(${variantNotes.trim()})`,
     ]
@@ -576,7 +745,7 @@ export default function App() {
     <div className="app theme-light">
       <header className="header">
         <div>
-          <h1>PokÃ©mon purchase sheet</h1>
+          <h1>Pokémon purchase sheet</h1>
           <p className="tagline">
             Enter detailed card info, fetch market data, then use 70% cash / 80% trade offers as your baseline.
           </p>
@@ -685,8 +854,12 @@ export default function App() {
           onClick={() => void getCardValue()}
           disabled={searching || loadingCard || !composedQuery}
         >
-          {searching ? "Searching PriceCharting..." : "Get card value"}
+          {searching || loadingCard ? "Loading…" : "Get card value"}
         </button>
+        <p className="muted small purchase-sheet-hint">
+          Uses your <strong>VPS scrape cache</strong> when <code>PC_API_BASE</code> / <code>PC_API_KEY</code> are set
+          (same as the panel below); otherwise falls back to the PriceCharting API token.
+        </p>
       </section>
 
       <section className="panel history-panel history-panel-main" aria-label="Recorded eBay sales">
@@ -1034,7 +1207,11 @@ export default function App() {
       {hits.length > 1 && (
         <section className="panel hits-panel">
           <h2 className="panel-title">Choose product match</h2>
-          <p className="muted small">Multiple PriceCharting products matched your narrowed search. Pick one, then load.</p>
+          <p className="muted small">
+            {lookupSource === "vps"
+              ? "Multiple matches in your VPS scrape cache. Pick one, then load."
+              : "Multiple PriceCharting products matched your narrowed search. Pick one, then load."}
+          </p>
           <ul className="hits-list">
             {hits.map((h) => (
               <li key={h.id}>
@@ -1047,8 +1224,8 @@ export default function App() {
                   />
                   <span>
                     <strong>{h.productName}</strong>
-                    <span className="muted"> Â· {h.consoleName}</span>
-                    <span className="muted"> Â· id {h.id}</span>
+                    <span className="muted"> · {h.consoleName}</span>
+                    <span className="muted"> · id {h.id}</span>
                   </span>
                 </label>
               </li>
@@ -1057,8 +1234,11 @@ export default function App() {
           <button
             type="button"
             className="primary"
-            onClick={() => selectedId && void loadDetails(selectedId)}
-            disabled={!selectedId || loadingCard}
+            onClick={() =>
+              selectedId &&
+              void (lookupSource === "vps" ? loadDetailsVps(selectedId) : loadDetailsOfficial(selectedId))
+            }
+            disabled={!selectedId || loadingCard || lookupSource == null}
           >
             {loadingCard ? "Loading..." : "Load selected card data"}
           </button>
@@ -1073,7 +1253,7 @@ export default function App() {
             <div>
               <strong>Loaded:</strong> {basketSummaryLabel}
               {pickReferenceCents(card) != null && (
-                <span className="ref-price"> Â· Ref. {formatUsd(pickReferenceCents(card))}</span>
+                <span className="ref-price"> · Ref. {formatUsd(pickReferenceCents(card))}</span>
               )}
             </div>
             <button type="button" className="primary" onClick={addToBasket}>
@@ -1098,7 +1278,7 @@ export default function App() {
                 className="linkish"
                 onClick={() => openUrl(card.product.pricechartingSearchUrl)}
               >
-                Open PriceCharting search
+                {lookupSource === "vps" ? "Open PriceCharting product page" : "Open PriceCharting search"}
               </button>
             </div>
           </section>
@@ -1112,10 +1292,11 @@ export default function App() {
           )}
 
           <section className="tiers-section">
-            <h3>Condition tiers (PriceCharting)</h3>
+            <h3>{lookupSource === "vps" ? "Guide grades & prices (your VPS scrape)" : "Condition tiers (PriceCharting)"}</h3>
             <p className="tier-intro muted">
-              Reference prices and recent sold rows from the PriceCharting marketplace per condition bucket (when
-              available).
+              {lookupSource === "vps"
+                ? "Structured grade rows from your cached snapshot (same data as the database). Marketplace sold tables are not replayed here."
+                : "Reference prices and recent sold rows from the PriceCharting marketplace per condition bucket (when available)."}
             </p>
             <div className="tier-list">
               {card.tiers.map((tier) => (
@@ -1125,52 +1306,58 @@ export default function App() {
                     <span className="tier-price">{formatUsd(tier.priceCents ?? null)}</span>
                   </summary>
                   <div className="tier-body">
-                    <p className="muted small">
-                      API field: <code>{tier.priceField}</code>
-                      {tier.conditionId != null && (
-                        <>
-                          {" "}
-                          Â· Marketplace condition-id <code>{tier.conditionId}</code>
-                        </>
-                      )}
-                    </p>
-                    {tier.soldSectionNote && <p className="note">{tier.soldSectionNote}</p>}
-                    {tier.sold.length === 0 && !tier.soldSectionNote && (
-                      <p className="muted small">No sold rows returned for this bucket.</p>
-                    )}
-                    {tier.sold.length > 0 && (
-                      <table className="sold-table">
-                        <thead>
-                          <tr>
-                            <th>Sale date</th>
-                            <th>Price</th>
-                            <th>Condition</th>
-                            <th></th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {tier.sold.map((o) => (
-                            <tr key={o.offerId}>
-                              <td>{o.saleTime ?? "—"}</td>
-                              <td>{formatUsd(o.priceCents)}</td>
-                              <td>
-                                {[o.includeString, o.conditionString].filter(Boolean).join(" · ") || "—"}
-                              </td>
-                              <td>
-                                {o.offerUrl && (
-                                  <button
-                                    type="button"
-                                    className="linkish"
-                                    onClick={() => openUrl(o.offerUrl)}
-                                  >
-                                    View
-                                  </button>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                    {lookupSource === "vps" ? (
+                      <p className="muted small">Guide price from your latest VPS scrape snapshot for this grade.</p>
+                    ) : (
+                      <>
+                        <p className="muted small">
+                          API field: <code>{tier.priceField}</code>
+                          {tier.conditionId != null && (
+                            <>
+                              {" "}
+                              · Marketplace condition-id <code>{tier.conditionId}</code>
+                            </>
+                          )}
+                        </p>
+                        {tier.soldSectionNote && <p className="note">{tier.soldSectionNote}</p>}
+                        {tier.sold.length === 0 && !tier.soldSectionNote && (
+                          <p className="muted small">No sold rows returned for this bucket.</p>
+                        )}
+                        {tier.sold.length > 0 && (
+                          <table className="sold-table">
+                            <thead>
+                              <tr>
+                                <th>Sale date</th>
+                                <th>Price</th>
+                                <th>Condition</th>
+                                <th></th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {tier.sold.map((o) => (
+                                <tr key={o.offerId}>
+                                  <td>{o.saleTime ?? "—"}</td>
+                                  <td>{formatUsd(o.priceCents)}</td>
+                                  <td>
+                                    {[o.includeString, o.conditionString].filter(Boolean).join(" · ") || "—"}
+                                  </td>
+                                  <td>
+                                    {o.offerUrl && (
+                                      <button
+                                        type="button"
+                                        className="linkish"
+                                        onClick={() => openUrl(o.offerUrl)}
+                                      >
+                                        View
+                                      </button>
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                      </>
                     )}
                   </div>
                 </details>
@@ -1184,7 +1371,11 @@ export default function App() {
               Currently active listings on eBay (US, Pokémon TCG singles) - not completed sales.
             </p>
             {card.ebayActive.length === 0 ? (
-              <p className="muted">No listings returned (check credentials or try another card).</p>
+              <p className="muted">
+                {lookupSource === "vps"
+                  ? "Live eBay listings are not fetched in VPS scrape mode. Add EBAY_CLIENT_ID / EBAY_CLIENT_SECRET for active listings, or use Recorded eBay sales below."
+                  : "No listings returned (check credentials or try another card)."}
+              </p>
             ) : (
               <ul className="ebay-grid">
                 {card.ebayActive.map((it, i) => (
@@ -1295,8 +1486,8 @@ export default function App() {
             <h3>Data sources & limitations</h3>
             <ul className="about-list">
               <li>
-                <strong>PriceCharting</strong> supplies product match, reference prices per tier, and marketplace sold
-                rows - not all sales everywhere.
+                <strong>PriceCharting</strong> — either your <strong>VPS scrape cache</strong> (preferred when{" "}
+                <code>PC_API_*</code> is set) or the official API token for live product + marketplace sold rows.
               </li>
               <li>
                 <strong>eBay</strong> uses the Browse API for <strong>active</strong> listings only.

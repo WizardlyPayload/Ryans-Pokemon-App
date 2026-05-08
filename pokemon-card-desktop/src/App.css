@@ -150,6 +150,13 @@ h3 {
   cursor: not-allowed;
 }
 
+.purchase-sheet-hint {
+  margin-top: 0.65rem;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  max-width: 40rem;
+}
+
 .panel {
   background: #fff;
   border: 1px solid #dadce0;
