@@ -203,6 +203,25 @@ type PcProductDetailResponse = {
   latestSnapshot?: PcLatestSnapshot | null;
 };
 
+type UnifiedEbaySaleRow = {
+  ebayItemId: string;
+  title: string;
+  priceDisplay?: string | null;
+  priceValue?: number | null;
+  market: string;
+  observedAt?: string | null;
+  pageUrl: string;
+};
+
+type UnifiedSearchSnapshot = {
+  query: string;
+  product?: PcProductDetailProduct | null;
+  latestSnapshot?: PcLatestSnapshot | null;
+  ebayRecentSales: UnifiedEbaySaleRow[];
+  ebayAverageLast30?: number | null;
+  ebayAverageLast30Count: number;
+};
+
 function tierKeyFromScrapedGrade(label: string, index: number): string {
   const L = label.trim();
   if (/ungraded/i.test(L)) return "loose";
@@ -272,6 +291,11 @@ function mapVpsProductToCardLoadout(detail: PcProductDetailResponse): CardLoadou
   };
 }
 
+function formatUsdDollars(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return "—";
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value);
+}
+
 function loadBasket(): BasketRow[] {
   try {
     const raw = localStorage.getItem(BASKET_KEY);
@@ -322,6 +346,9 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [lookupSource, setLookupSource] = useState<"vps" | "official" | null>(null);
   const [card, setCard] = useState<CardLoadout | null>(null);
+  const [unifiedSales, setUnifiedSales] = useState<UnifiedEbaySaleRow[]>([]);
+  const [unifiedAvg, setUnifiedAvg] = useState<number | null>(null);
+  const [unifiedAvgCount, setUnifiedAvgCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [showAbout, setShowAbout] = useState(false);
 
@@ -514,6 +541,9 @@ export default function App() {
     setLoadingCard(true);
     setError(null);
     setCard(null);
+    setUnifiedSales([]);
+    setUnifiedAvg(null);
+    setUnifiedAvgCount(0);
     try {
       const data = await invoke<CardLoadout>("load_card", { productId });
       setLookupSource("official");
@@ -530,6 +560,9 @@ export default function App() {
       setLoadingCard(true);
       setError(null);
       setCard(null);
+      setUnifiedSales([]);
+      setUnifiedAvg(null);
+      setUnifiedAvgCount(0);
       persistpcApiSettings();
       try {
         const baseArg = pcApiApiBase.trim() || undefined;
@@ -626,8 +659,61 @@ export default function App() {
       setError("Enter at least a card name (or set / number / notes) so we can narrow the search.");
       return;
     }
-    await runPriceChartingSearch(q);
-  }, [composedQuery, runPriceChartingSearch]);
+    const canTryVps =
+      (pcApiApiBase.trim().length > 0 || pcApiEnvHint.hasEnvBase) &&
+      (pcApiApiKey.trim().length > 0 || pcApiEnvHint.hasEnvKey);
+    if (!canTryVps) {
+      await runPriceChartingSearch(q);
+      return;
+    }
+
+    setSearching(true);
+    setLoadingCard(true);
+    setError(null);
+    setLookupSource(null);
+    setCard(null);
+    setHits([]);
+    setSelectedId(null);
+    setUnifiedSales([]);
+    setUnifiedAvg(null);
+    setUnifiedAvgCount(0);
+    persistpcApiSettings();
+    try {
+      const baseArg = pcApiApiBase.trim() || undefined;
+      const keyArg = pcApiApiKey.trim() || undefined;
+      const out = await invoke<UnifiedSearchSnapshot>("pc_api_unified_search", {
+        query: q,
+        apiBase: baseArg ?? null,
+        apiKey: keyArg ?? null,
+      });
+      setUnifiedSales(out.ebayRecentSales ?? []);
+      setUnifiedAvg(out.ebayAverageLast30 ?? null);
+      setUnifiedAvgCount(out.ebayAverageLast30Count ?? 0);
+      if (!out.product) {
+        setError("No PriceCharting product found in your VPS scrape cache for that query.");
+        return;
+      }
+      setLookupSource("vps");
+      setCard(
+        mapVpsProductToCardLoadout({
+          product: out.product,
+          latestSnapshot: out.latestSnapshot ?? null,
+        }),
+      );
+    } catch (e) {
+      setError(`Unified VPS search failed: ${String(e)}`);
+    } finally {
+      setSearching(false);
+      setLoadingCard(false);
+    }
+  }, [
+    composedQuery,
+    pcApiApiBase,
+    pcApiApiKey,
+    pcApiEnvHint.hasEnvBase,
+    pcApiEnvHint.hasEnvKey,
+    runPriceChartingSearch,
+  ]);
 
   const persistHistorySettings = () => {
     try {
@@ -1366,6 +1452,44 @@ export default function App() {
           </section>
 
           <section className="ebay-section">
+            {lookupSource === "vps" && (
+              <div className="panel">
+                <h3>Recent eBay sold (last 30)</h3>
+                <p className="muted small">
+                  Average of last {unifiedAvgCount} sales: <strong>{formatUsdDollars(unifiedAvg)}</strong>
+                </p>
+                {unifiedSales.length === 0 ? (
+                  <p className="muted small">No recent sold rows found for this query.</p>
+                ) : (
+                  <div className="history-table-scroll">
+                    <table className="history-table">
+                      <thead>
+                        <tr>
+                          <th>Title</th>
+                          <th>Sold</th>
+                          <th>Market</th>
+                          <th>Seen</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {unifiedSales.map((r, i) => (
+                          <tr key={`${r.ebayItemId}-${i}`}>
+                            <td>
+                              <button type="button" className="linkish table-title-btn" onClick={() => openUrl(r.pageUrl)}>
+                                {r.title}
+                              </button>
+                            </td>
+                            <td>{r.priceDisplay ?? formatUsdDollars(r.priceValue ?? null)}</td>
+                            <td>{r.market}</td>
+                            <td className="muted small">{r.observedAt ?? "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
             <h3>Active listings (eBay)</h3>
             <p className="ebay-disclaimer">
               Currently active listings on eBay (US, Pokémon TCG singles) - not completed sales.

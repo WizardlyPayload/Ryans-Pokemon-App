@@ -1,4 +1,4 @@
-﻿use crate::types::{MarketCompareSnapshot, PcProductDetailResponse, PcSearchSnapshot};
+﻿use crate::types::{MarketCompareSnapshot, PcProductDetailResponse, PcSearchSnapshot, UnifiedSearchSnapshot};
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 
@@ -119,4 +119,39 @@ pub async fn fetch_market_compare(
         return Err(format!("VPS compare API HTTP {status}: {}", truncate_body_hint(&bytes)));
     }
     decode_json_body::<MarketCompareSnapshot>(&bytes, "VPS compare JSON")
+}
+
+pub async fn fetch_unified_search(
+    client: &Client,
+    api_base: String,
+    api_key: String,
+    query: String,
+) -> Result<UnifiedSearchSnapshot, String> {
+    let q = query.trim();
+    if q.is_empty() {
+        return Err("Enter a search query.".into());
+    }
+    let base = normalize_api_base(&api_base);
+    if base.is_empty() {
+        return Err("Set PC_API_BASE.".into());
+    }
+    let url = format!("{}/v1/unified-search?q={}", base, urlencoding::encode(q));
+    let res = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", api_key.trim()))
+        .send()
+        .await
+        .map_err(|e| format!("VPS unified search request failed: {e}"))?;
+    let status = res.status();
+    let bytes = res
+        .bytes()
+        .await
+        .map_err(|e| format!("VPS unified search: read body failed: {e}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "VPS unified search HTTP {status}: {}",
+            truncate_body_hint(&bytes)
+        ));
+    }
+    decode_json_body::<UnifiedSearchSnapshot>(&bytes, "VPS unified search JSON")
 }

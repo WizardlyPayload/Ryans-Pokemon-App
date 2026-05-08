@@ -66,12 +66,25 @@ async function ebaySearchResults(q: string) {
   };
 }
 
+function likePattern(q: string) {
+  return `%${q.replace(/%/g, "\\%").replace(/_/g, "\\_")}%`;
+}
+
+const PRICE_NUMERIC_SQL = `NULLIF(
+  REPLACE(
+    SUBSTRING(o.price_text FROM '([0-9]+(?:,[0-9]{3})*(?:\\.[0-9]{1,2})?)'),
+    ',',
+    ''
+  ),
+  ''
+)::numeric`;
+
 app.get("/v1/pc/search", async (request) => {
   const q = String((request.query as { q?: string }).q || "").trim();
   if (!q || q.length > 200) {
     return { query: q, results: [] };
   }
-  const pattern = `%${q.replace(/%/g, "\\%").replace(/_/g, "\\_")}%`;
+  const pattern = likePattern(q);
   const r = await pool.query(
     `SELECT
        p.pc_product_id::text AS "pcProductId",
@@ -151,7 +164,7 @@ app.get("/v1/compare", async (request) => {
       ebay: { query: q, results: [] },
     };
   }
-  const pattern = `%${q.replace(/%/g, "\\%").replace(/_/g, "\\_")}%`;
+  const pattern = likePattern(q);
   const pcR = await pool.query(
     `SELECT
        p.pc_product_id::text AS "pcProductId",
@@ -195,6 +208,108 @@ app.get("/v1/search", async (request) => {
     return { query: q, results: [] };
   }
   return ebaySearchResults(q);
+});
+
+app.get("/v1/unified-search", async (request) => {
+  const q = String((request.query as { q?: string }).q || "").trim();
+  if (!q || q.length > 200) {
+    return {
+      query: q,
+      product: null,
+      latestSnapshot: null,
+      ebayRecentSales: [],
+      ebayAverageLast30: null,
+      ebayAverageLast30Count: 0,
+    };
+  }
+  const pattern = likePattern(q);
+
+  const productQ = await pool.query(
+    `SELECT
+       p.pc_product_id::text AS "pcProductId",
+       p.title,
+       p.console_or_category AS "consoleOrCategory",
+       p.product_url AS "productUrl",
+       p.image_url AS "imageUrl",
+       p.card_number AS "cardNumber",
+       p.release_date AS "releaseDate",
+       p.publisher,
+       p.first_seen_at AS "firstSeenAt",
+       p.last_seen_at AS "lastSeenAt"
+     FROM pc_products p
+     WHERE p.title ILIKE $1 ESCAPE '\\'
+        OR p.console_or_category ILIKE $1 ESCAPE '\\'
+        OR p.card_number ILIKE $1 ESCAPE '\\'
+        OR p.publisher ILIKE $1 ESCAPE '\\'
+     ORDER BY p.last_seen_at DESC
+     LIMIT 1`,
+    [pattern],
+  );
+  const product = productQ.rows[0] ?? null;
+
+  let latestSnapshot: {
+    tiers: unknown;
+    extras: unknown;
+    observedAt: string | null;
+    parseVersion: string | null;
+  } | null = null;
+  if (product?.pcProductId) {
+    const snapQ = await pool.query(
+      `SELECT
+         tiers,
+         extras,
+         observed_at AS "observedAt",
+         parse_version AS "parseVersion"
+       FROM pc_price_snapshots
+       WHERE pc_product_id = $1::bigint
+       ORDER BY observed_at DESC
+       LIMIT 1`,
+      [product.pcProductId],
+    );
+    latestSnapshot = snapQ.rows[0] ?? null;
+  }
+
+  const recentQ = await pool.query(
+    `SELECT
+       o.ebay_item_id::text AS "ebayItemId",
+       o.title,
+       o.price_text AS "priceDisplay",
+       ${PRICE_NUMERIC_SQL} AS "priceValue",
+       o.market,
+       o.observed_at AS "observedAt",
+       o.page_url AS "pageUrl"
+     FROM listing_observations o
+     WHERE o.title ILIKE $1 ESCAPE '\\'
+       AND ${PRICE_NUMERIC_SQL} IS NOT NULL
+     ORDER BY o.observed_at DESC
+     LIMIT 30`,
+    [pattern],
+  );
+
+  const avgQ = await pool.query(
+    `SELECT
+       COUNT(*)::int AS "count",
+       AVG(${PRICE_NUMERIC_SQL})::numeric(12,2) AS "avg"
+     FROM (
+       SELECT o.price_text
+       FROM listing_observations o
+       WHERE o.title ILIKE $1 ESCAPE '\\'
+         AND ${PRICE_NUMERIC_SQL} IS NOT NULL
+       ORDER BY o.observed_at DESC
+       LIMIT 30
+     ) o`,
+    [pattern],
+  );
+  const avgRow = avgQ.rows[0] as { count: number; avg: string | null };
+
+  return {
+    query: q,
+    product,
+    latestSnapshot,
+    ebayRecentSales: recentQ.rows,
+    ebayAverageLast30: avgRow?.avg != null ? Number(avgRow.avg) : null,
+    ebayAverageLast30Count: avgRow?.count ?? 0,
+  };
 });
 
 app.get<{ Params: { id: string } }>("/v1/item/:id/history", async (request, reply) => {

@@ -1,4 +1,4 @@
-mod ebay;
+﻿mod ebay;
 mod history_api;
 mod pricecharting;
 mod types;
@@ -7,7 +7,7 @@ mod vps_pc_api;
 use reqwest::Client;
 use types::{
     CardLoadout, HistoryItemDetail, HistorySearchSnapshot, MarketCompareSnapshot, PcProductDetailResponse,
-    PcSearchSnapshot, ProductSummary, VpsPcEnv,
+    PcSearchSnapshot, ProductSummary, UnifiedSearchSnapshot, VpsPcEnv,
 };
 
 pub struct HttpClient(pub Client);
@@ -184,6 +184,18 @@ async fn pc_api_market_compare(
     vps_pc_api::fetch_market_compare(&client.0, base, key, query).await
 }
 
+#[tauri::command]
+async fn pc_api_unified_search(
+    query: String,
+    api_base: Option<String>,
+    api_key: Option<String>,
+    client: tauri::State<'_, HttpClient>,
+) -> Result<UnifiedSearchSnapshot, String> {
+    let base = resolve_vps_pc_base(api_base)?;
+    let key = resolve_vps_pc_key(api_key)?;
+    vps_pc_api::fetch_unified_search(&client.0, base, key, query).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     dotenvy::dotenv().ok();
@@ -204,6 +216,7 @@ pub fn run() {
             pc_api_pc_search,
             pc_api_pc_product,
             pc_api_market_compare,
+            pc_api_unified_search,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

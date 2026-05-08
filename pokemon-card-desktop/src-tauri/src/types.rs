@@ -161,6 +161,29 @@ pub struct MarketCompareSnapshot {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
+pub struct UnifiedEbaySaleRow {
+    pub ebay_item_id: String,
+    pub title: String,
+    pub price_display: Option<String>,
+    pub price_value: Option<f64>,
+    pub market: String,
+    pub observed_at: Option<String>,
+    pub page_url: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct UnifiedSearchSnapshot {
+    pub query: String,
+    pub product: Option<PcProductDetailProduct>,
+    pub latest_snapshot: Option<PcLatestSnapshot>,
+    pub ebay_recent_sales: Vec<UnifiedEbaySaleRow>,
+    pub ebay_average_last30: Option<f64>,
+    pub ebay_average_last30_count: i32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct HistoryObservationRow {
     pub ebay_item_id: String,
     pub title: String,
