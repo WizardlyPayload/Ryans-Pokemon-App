@@ -77,7 +77,7 @@ services:
       DATABASE_URL: postgres://ebayhist:${POSTGRES_PASSWORD:-ebayhist_dev_change_me}@postgres:5432/ebay_history
       PC_CRAWLER_ENABLED: ${PC_CRAWLER_ENABLED:-true}
       PC_SEARCH_QUERY: ${PC_SEARCH_QUERY:-pikachu}
-      PC_PRODUCTS_PER_RUN: ${PC_PRODUCTS_PER_RUN:-15}
+      PC_PRODUCTS_PER_RUN: ${PC_PRODUCTS_PER_RUN:-0}
       PC_MIN_DELAY_MS: ${PC_MIN_DELAY_MS:-3000}
       PC_MAX_DELAY_MS: ${PC_MAX_DELAY_MS:-14000}
       PC_LOOP_INTERVAL_MS: ${PC_LOOP_INTERVAL_MS:-3600000}

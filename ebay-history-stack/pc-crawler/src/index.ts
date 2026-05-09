@@ -10,10 +10,14 @@ const PC_CRAWLER_ENABLED = (process.env.PC_CRAWLER_ENABLED || "true").toLowerCas
 const PC_SEARCH_QUERY = (process.env.PC_SEARCH_QUERY || "pikachu").trim();
 /** 0 = no cap (crawl all links discovered this run). */
 const PC_PRODUCTS_PER_RUN = Math.max(0, Number(process.env.PC_PRODUCTS_PER_RUN || 0));
-/** 0 = crawl pages until no links (bounded by PC_SEARCH_MAX_PAGES). */
+/** 0 = crawl pages until no links (bounded by PC_SEARCH_MAX_PAGES when >0). */
 const PC_SEARCH_PAGES_PER_RUN = Math.max(0, Number(process.env.PC_SEARCH_PAGES_PER_RUN || 0));
-/** Safety bound so "whole site" mode cannot loop forever. */
-const PC_SEARCH_MAX_PAGES = Math.max(1, Number(process.env.PC_SEARCH_MAX_PAGES || 500));
+/** 0 = no cap (paginate search until a page returns no links). >0 = safety cap on search pages. */
+const PC_SEARCH_MAX_PAGES_RAW = Number(process.env.PC_SEARCH_MAX_PAGES ?? "0");
+const PC_SEARCH_MAX_PAGES =
+  !Number.isFinite(PC_SEARCH_MAX_PAGES_RAW) || PC_SEARCH_MAX_PAGES_RAW <= 0
+    ? Number.MAX_SAFE_INTEGER
+    : Math.max(1, Math.floor(PC_SEARCH_MAX_PAGES_RAW));
 const PC_MIN_DELAY_MS = Math.max(500, Number(process.env.PC_MIN_DELAY_MS || 3000));
 const PC_MAX_DELAY_MS = Math.max(PC_MIN_DELAY_MS, Number(process.env.PC_MAX_DELAY_MS || 14000));
 const PC_LOOP_INTERVAL_MS = Math.max(60_000, Number(process.env.PC_LOOP_INTERVAL_MS || 3_600_000));
