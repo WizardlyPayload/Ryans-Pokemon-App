@@ -1,319 +1,34 @@
 ﻿import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import "./App.css";
-
-const HISTORY_API_BASE_KEY = "pokemon-desktop-history-api-base";
-const HISTORY_API_KEY_KEY = "pokemon-desktop-history-api-key";
-const HISTORY_LAST_QUERY_KEY = "pokemon-desktop-history-last-query";
-const PC_API_BASE_KEY = "pokemon-desktop-pcApi-pc-api-base";
-const PC_API_KEY_KEY = "pokemon-desktop-pcApi-pc-api-key";
-const PC_LAST_QUERY_KEY = "pokemon-desktop-pcApi-last-query";
-const BASKET_KEY = "pokemon-buy-basket";
-
-type ProductSummary = {
-  id: string;
-  productName: string;
-  consoleName: string;
-};
-
-type PcSoldOffer = {
-  offerId: string;
-  priceCents: number;
-  saleTime?: string;
-  conditionString?: string;
-  includeString?: string;
-  offerUrl: string;
-};
-
-type TierView = {
-  tierKey: string;
-  label: string;
-  priceField: string;
-  priceCents: number | null;
-  conditionId: number | null;
-  sold: PcSoldOffer[];
-  soldSectionNote?: string;
-};
-
-type EbayListing = {
-  title: string;
-  priceDisplay: string;
-  condition: string;
-  imageUrl?: string;
-  itemWebUrl: string;
-};
-
-type CardLoadout = {
-  product: {
-    id: string;
-    productName: string;
-    consoleName: string;
-    genre?: string;
-    imageUrl?: string;
-    pricechartingSearchUrl: string;
-  };
-  tiers: TierView[];
-  ebayActive: EbayListing[];
-  warnings: string[];
-};
-
-type HistorySearchRow = {
-  ebayItemId: string;
-  title: string;
-  priceDisplay?: string | null;
-  market: string;
-  observedAt?: string | null;
-  pageUrl: string;
-};
-
-type HistorySearchSnapshot = {
-  query: string;
-  results: HistorySearchRow[];
-};
-
-type HistoryObservationRow = {
-  ebayItemId: string;
-  title: string;
-  priceDisplay?: string | null;
-  detail?: string | null;
-  market: string;
-  observedAt?: string | null;
-  thumbnailUrl?: string | null;
-  pageUrl: string;
-};
-
-type HistoryItemDetail = {
-  ebayItemId: string;
-  history: HistoryObservationRow[];
-};
-
-type PcSearchRow = {
-  pcProductId: string;
-  title: string;
-  consoleOrCategory?: string | null;
-  productUrl: string;
-  imageUrl?: string | null;
-  cardNumber?: string | null;
-  releaseDate?: string | null;
-  publisher?: string | null;
-  tiers: Record<string, unknown>;
-  snapshotAt?: string | null;
-  parseVersion?: string | null;
-};
-
-type PcSearchSnapshot = {
-  query: string;
-  results: PcSearchRow[];
-};
-
-type MarketCompareSnapshot = {
-  query: string;
-  pricecharting: PcSearchSnapshot;
-  ebay: HistorySearchSnapshot;
-};
-
-type BasketRow = {
-  id: string;
-  addedAt: string;
-  cardLabel: string;
-  paidCents: number | null;
-  currentValueCents: number | null;
-  method: "cash" | "trade" | "";
-};
-
-function formatUsd(cents: number | null | undefined): string {
-  if (cents == null || Number.isNaN(cents)) return "—";
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-  }).format(cents / 100);
-}
-
-/** Match crawler-side cleanup so UI shows compact sold prices. */
-function formatHistoryPrice(raw: string | null | undefined): string {
-  if (raw == null || !String(raw).trim()) return "—";
-  let t = String(raw).replace(/\s+/g, " ").trim();
-  t = t.replace(/\s*or\s*best\s*offer\b/gi, "").replace(/\s+/g, " ").trim();
-  return t || "—";
-}
-
-function parseMoneyInput(raw: string): number | null {
-  const t = raw.trim().replace(/[$,]/g, "");
-  if (!t) return null;
-  const n = Number.parseFloat(t);
-  if (Number.isNaN(n)) return null;
-  return Math.round(n * 100);
-}
-
-function buildNarrowQuery(p: {
-  cardName: string;
-  setName: string;
-  cardNumber: string;
-  variantNotes: string;
-  gradingCompany: string;
-  grade: string;
-  language: string;
-  sealed: string;
-}): string {
-  const parts: string[] = [];
-  if (p.cardName.trim()) parts.push(p.cardName.trim());
-  if (p.setName.trim()) parts.push(p.setName.trim());
-  if (p.cardNumber.trim()) parts.push(p.cardNumber.trim());
-  if (p.variantNotes.trim()) parts.push(p.variantNotes.trim());
-  if (p.gradingCompany && p.gradingCompany !== "__none__") parts.push(p.gradingCompany);
-  if (p.grade && p.grade !== "Ungraded") parts.push(p.grade);
-  if (p.language && p.language !== "Any") parts.push(p.language);
-  if (p.sealed === "Sealed only") parts.push("sealed");
-  if (p.sealed === "Not sealed") parts.push("opened");
-  return parts.join(" ").replace(/\s+/g, " ").trim();
-}
-
-function pickReferenceCents(card: CardLoadout): number | null {
-  const loose = card.tiers.find((t) => t.tierKey === "loose");
-  if (loose?.priceCents != null) return loose.priceCents;
-  for (const t of card.tiers) {
-    if (t.priceCents != null) return t.priceCents;
-  }
-  return null;
-}
-
-type PcProductDetailProduct = {
-  pcProductId: string;
-  title: string;
-  consoleOrCategory?: string | null;
-  productUrl: string;
-  imageUrl?: string | null;
-  cardNumber?: string | null;
-  releaseDate?: string | null;
-  publisher?: string | null;
-  firstSeenAt?: string | null;
-  lastSeenAt?: string | null;
-};
-
-type PcLatestSnapshot = {
-  tiers: Record<string, unknown>;
-  extras?: Record<string, unknown> | null;
-  observedAt?: string | null;
-  parseVersion?: string | null;
-};
-
-type PcProductDetailResponse = {
-  product: PcProductDetailProduct;
-  latestSnapshot?: PcLatestSnapshot | null;
-};
-
-type UnifiedEbaySaleRow = {
-  ebayItemId: string;
-  title: string;
-  priceDisplay?: string | null;
-  priceValue?: number | null;
-  market: string;
-  observedAt?: string | null;
-  pageUrl: string;
-};
-
-type UnifiedSearchSnapshot = {
-  query: string;
-  product?: PcProductDetailProduct | null;
-  latestSnapshot?: PcLatestSnapshot | null;
-  ebayRecentSales: UnifiedEbaySaleRow[];
-  ebayAverageLast30?: number | null;
-  ebayAverageLast30Count: number;
-};
-
-function tierKeyFromScrapedGrade(label: string, index: number): string {
-  const L = label.trim();
-  if (/ungraded/i.test(L)) return "loose";
-  if (/psa\s*10\b/i.test(L)) return "graded:psa10";
-  if (/psa\s*9\b/i.test(L)) return "graded:psa9";
-  if (/bgs\s*10\b/i.test(L)) return "graded:bgs10";
-  return `scraped-${index}`;
-}
-
-function mapVpsProductToCardLoadout(detail: PcProductDetailResponse): CardLoadout {
-  const p = detail.product;
-  const snap = detail.latestSnapshot;
-  const tiersJson = snap?.tiers;
-  let grades: Array<{ grade?: string; priceDisplay?: string; priceUsd?: number | null }> = [];
-  if (
-    tiersJson &&
-    typeof tiersJson === "object" &&
-    "grades" in tiersJson &&
-    Array.isArray((tiersJson as { grades: unknown }).grades)
-  ) {
-    grades = (tiersJson as { grades: typeof grades }).grades;
-  }
-
-  const tierViews: TierView[] = grades.map((g, i) => {
-    const label = g.grade ?? `Tier ${i + 1}`;
-    const pcUsd = g.priceUsd;
-    const cents =
-      pcUsd != null && Number.isFinite(Number(pcUsd)) ? Math.round(Number(pcUsd) * 100) : null;
-    return {
-      tierKey: tierKeyFromScrapedGrade(label, i),
-      label,
-      priceField: "scrapedGuide",
-      priceCents: cents,
-      conditionId: null,
-      sold: [],
-      soldSectionNote: undefined,
-    };
-  });
-
-  let genre: string | undefined;
-  const ex = snap?.extras;
-  if (ex && typeof ex === "object" && Array.isArray((ex as { detailRows?: unknown }).detailRows)) {
-    const rows = (ex as { detailRows: Array<{ label?: string; value?: string }> }).detailRows;
-    const row = rows.find((r) => /genre/i.test(String(r.label)));
-    genre = row?.value?.trim();
-  }
-
-  const metaBits = [p.cardNumber, p.releaseDate, p.publisher].filter(Boolean).join(" · ");
-  const warnings: string[] = [
-    "Prices from your private VPS scrape (cached HTML), not the live PriceCharting API.",
-    ...(metaBits ? [`Catalog: ${metaBits}`] : []),
-    "eBay active listings were not loaded (add EBAY_CLIENT_ID / EBAY_CLIENT_SECRET for live comps).",
-  ];
-
-  return {
-    product: {
-      id: p.pcProductId,
-      productName: p.title,
-      consoleName: p.consoleOrCategory ?? "",
-      genre,
-      imageUrl: p.imageUrl ?? undefined,
-      pricechartingSearchUrl: p.productUrl,
-    },
-    tiers: tierViews,
-    ebayActive: [],
-    warnings,
-  };
-}
-
-function formatUsdDollars(value: number | null | undefined): string {
-  if (value == null || Number.isNaN(value)) return "—";
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value);
-}
-
-function loadBasket(): BasketRow[] {
-  try {
-    const raw = localStorage.getItem(BASKET_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (r): r is BasketRow =>
-        typeof r === "object" &&
-        r !== null &&
-        "id" in r &&
-        "cardLabel" in r &&
-        typeof (r as BasketRow).id === "string",
-    );
-  } catch {
-    return [];
-  }
-}
+import { useDebouncedValue } from "./lib/useDebouncedValue";
+import { CardDetailPanel } from "./components/CardDetailPanel";
+import { MainContent } from "./components/MainContent";
+import { Sidebar } from "./components/Sidebar";
+import type {
+  BasketRow,
+  CardLoadout,
+  HistoryItemDetail,
+  HistorySearchSnapshot,
+  MarketCompareSnapshot,
+  PcProductDetailResponse,
+  PcSearchSnapshot,
+  ProductSummary,
+  UnifiedEbaySaleRow,
+  UnifiedSearchSnapshot,
+} from "./types";
+import {
+  BASKET_KEY,
+  buildNarrowQuery,
+  HISTORY_API_BASE_KEY,
+  HISTORY_API_KEY_KEY,
+  HISTORY_LAST_QUERY_KEY,
+  loadBasket,
+  mapVpsProductToCardLoadout,
+  PC_API_BASE_KEY,
+  PC_API_KEY_KEY,
+  PC_LAST_QUERY_KEY,
+  pickReferenceCents,
+} from "./lib/cardAppUtils";
 
 export default function App() {
   const [cardName, setCardName] = useState("");
@@ -517,26 +232,6 @@ export default function App() {
     }
   }, [pcApiSearchQuery, pcApiApiBase, pcApiApiKey]);
 
-  function tiersPreview(tiers: unknown): string {
-    if (tiers && typeof tiers === "object" && "grades" in tiers) {
-      const gr = (tiers as { grades?: Array<{ grade?: string; priceDisplay?: string }> }).grades;
-      if (Array.isArray(gr) && gr.length > 0) {
-        const line = gr.map((x) => `${x.grade ?? "?"}: ${x.priceDisplay ?? "—"}`).join(" · ");
-        return line.slice(0, 360) + (line.length > 360 ? "..." : "");
-      }
-    }
-    if (tiers && typeof tiers === "object" && "gridText" in tiers) {
-      const g = (tiers as { gridText?: string }).gridText;
-      if (typeof g === "string" && g.trim())
-        return g.trim().slice(0, 280) + (g.length > 280 ? "..." : "");
-    }
-    try {
-      return JSON.stringify(tiers).slice(0, 200);
-    } catch {
-      return "—";
-    }
-  }
-
   const loadDetailsOfficial = useCallback(async (productId: string) => {
     setLoadingCard(true);
     setError(null);
@@ -583,78 +278,81 @@ export default function App() {
     [pcApiApiBase, pcApiApiKey],
   );
 
-  const runPriceChartingSearch = useCallback(async (q: string) => {
-    setSearching(true);
-    setError(null);
-    setCard(null);
-    setSelectedId(null);
-    setHits([]);
-    setLookupSource(null);
+  const runPriceChartingSearch = useCallback(
+    async (q: string) => {
+      setSearching(true);
+      setError(null);
+      setCard(null);
+      setSelectedId(null);
+      setHits([]);
+      setLookupSource(null);
 
-    const canTryVps =
-      (pcApiApiBase.trim().length > 0 || pcApiEnvHint.hasEnvBase) &&
-      (pcApiApiKey.trim().length > 0 || pcApiEnvHint.hasEnvKey);
+      const canTryVps =
+        (pcApiApiBase.trim().length > 0 || pcApiEnvHint.hasEnvBase) &&
+        (pcApiApiKey.trim().length > 0 || pcApiEnvHint.hasEnvKey);
 
-    if (canTryVps) {
-      persistpcApiSettings();
-      try {
-        const baseArg = pcApiApiBase.trim() || undefined;
-        const keyArg = pcApiApiKey.trim() || undefined;
-        const snap = await invoke<PcSearchSnapshot>("pc_api_pc_search", {
-          query: q,
-          apiBase: baseArg ?? null,
-          apiKey: keyArg ?? null,
-        });
-        if (snap.results.length > 0) {
-          setLookupSource("vps");
-          setHits(
-            snap.results.map((r) => ({
-              id: r.pcProductId,
-              productName: r.title,
-              consoleName: r.consoleOrCategory ?? "",
-            })),
-          );
-          if (snap.results.length === 1) {
-            const id = snap.results[0].pcProductId;
-            setSelectedId(id);
-            await loadDetailsVps(id);
+      if (canTryVps) {
+        persistpcApiSettings();
+        try {
+          const baseArg = pcApiApiBase.trim() || undefined;
+          const keyArg = pcApiApiKey.trim() || undefined;
+          const snap = await invoke<PcSearchSnapshot>("pc_api_pc_search", {
+            query: q,
+            apiBase: baseArg ?? null,
+            apiKey: keyArg ?? null,
+          });
+          if (snap.results.length > 0) {
+            setLookupSource("vps");
+            setHits(
+              snap.results.map((r) => ({
+                id: r.pcProductId,
+                productName: r.title,
+                consoleName: r.consoleOrCategory ?? "",
+              })),
+            );
+            if (snap.results.length === 1) {
+              const id = snap.results[0].pcProductId;
+              setSelectedId(id);
+              await loadDetailsVps(id);
+            }
+            setSearching(false);
+            return;
           }
+        } catch (e) {
+          setError(`VPS scrape cache: ${String(e)}`);
           setSearching(false);
           return;
         }
+      }
+
+      try {
+        const results = await invoke<ProductSummary[]>("pc_search_products", { query: q });
+        setLookupSource("official");
+        setHits(results);
+        if (results.length === 1) {
+          const id = results[0].id;
+          setSelectedId(id);
+          await loadDetailsOfficial(id);
+        }
       } catch (e) {
-        setError(`VPS scrape cache: ${String(e)}`);
+        setError(String(e));
+        setHits([]);
+      } finally {
         setSearching(false);
-        return;
       }
-    }
+    },
+    [
+      pcApiApiBase,
+      pcApiApiKey,
+      pcApiEnvHint.hasEnvBase,
+      pcApiEnvHint.hasEnvKey,
+      loadDetailsVps,
+      loadDetailsOfficial,
+    ],
+  );
 
-    try {
-      const results = await invoke<ProductSummary[]>("pc_search_products", { query: q });
-      setLookupSource("official");
-      setHits(results);
-      if (results.length === 1) {
-        const id = results[0].id;
-        setSelectedId(id);
-        await loadDetailsOfficial(id);
-      }
-    } catch (e) {
-      setError(String(e));
-      setHits([]);
-    } finally {
-      setSearching(false);
-    }
-  }, [
-    pcApiApiBase,
-    pcApiApiKey,
-    pcApiEnvHint.hasEnvBase,
-    pcApiEnvHint.hasEnvKey,
-    loadDetailsVps,
-    loadDetailsOfficial,
-  ]);
-
-  const getCardValue = useCallback(async () => {
-    const q = composedQuery;
+  const getCardValue = useCallback(async (queryOverride?: string) => {
+    const q = (queryOverride ?? composedQuery).trim();
     if (!q) {
       setError("Enter at least a card name (or set / number / notes) so we can narrow the search.");
       return;
@@ -809,9 +507,7 @@ export default function App() {
   }, [card, setName, cardNumber, variantNotes]);
 
   const updateBasketPaid = useCallback((id: string, paidCents: number | null) => {
-    setBasket((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, paidCents } : r)),
-    );
+    setBasket((prev) => prev.map((r) => (r.id === id ? { ...r, paidCents } : r)));
   }, []);
 
   const updateBasketMethod = useCallback((id: string, method: BasketRow["method"]) => {
@@ -827,9 +523,23 @@ export default function App() {
     return card.product.productName;
   }, [card, composedQuery]);
 
+  const debouncedQuery = useDebouncedValue(composedQuery, 750);
+  const [liveSearch, setLiveSearch] = useState(false);
+
+  /** Reactive lookup: same pipelines as "Get card value", keyed off debounced query (not selectedId). */
+  useEffect(() => {
+    if (!liveSearch) return;
+    const q = debouncedQuery.trim();
+    if (q.length < 4) return;
+    void getCardValue(q);
+  }, [debouncedQuery, liveSearch, getCardValue]);
+
+  /** Detail column open when a card is visible or loading (unified search sets card without selectedId). */
+  const detailPanelOpen = Boolean(card) || loadingCard;
+
   return (
-    <div className="app theme-light">
-      <header className="header">
+    <div className="app theme-light app-root min-h-screen">
+      <header className="header header-shell">
         <div>
           <h1>Pokémon purchase sheet</h1>
           <p className="tagline">
@@ -841,768 +551,92 @@ export default function App() {
         </button>
       </header>
 
-      <section className="purchase-sheet" aria-label="Card lookup">
-        <div className="form-grid">
-          <label className="field">
-            <span className="field-label">Card name</span>
-            <input
-              className="field-input"
-              value={cardName}
-              onChange={(e) => setCardName(e.target.value)}
-              placeholder="e.g. Pikachu"
-              autoComplete="off"
-            />
-          </label>
-          <label className="field">
-            <span className="field-label">Set name</span>
-            <input
-              className="field-input"
-              value={setName}
-              onChange={(e) => setSetName(e.target.value)}
-              placeholder="e.g. Base Set"
-              autoComplete="off"
-            />
-          </label>
-          <label className="field">
-            <span className="field-label">Card number</span>
-            <input
-              className="field-input"
-              value={cardNumber}
-              onChange={(e) => setCardNumber(e.target.value)}
-              placeholder="e.g. 58/102"
-              autoComplete="off"
-            />
-          </label>
-          <label className="field field-span-2">
-            <span className="field-label">Variant / notes</span>
-            <input
-              className="field-input"
-              value={variantNotes}
-              onChange={(e) => setVariantNotes(e.target.value)}
-              placeholder="e.g. 1st Edition Shadowless Red Cheeks"
-              autoComplete="off"
-            />
-          </label>
-          <label className="field">
-            <span className="field-label">Grading company</span>
-            <select
-              className="field-input"
-              value={gradingCompany}
-              onChange={(e) => setGradingCompany(e.target.value)}
-            >
-              <option value="__none__">Select company</option>
-              <option value="PSA">PSA</option>
-              <option value="BGS">BGS</option>
-              <option value="CGC">CGC</option>
-              <option value="SGC">SGC</option>
-              <option value="TAG">TAG</option>
-              <option value="Other">Other</option>
-            </select>
-          </label>
-          <label className="field">
-            <span className="field-label">Grade</span>
-            <select className="field-input" value={grade} onChange={(e) => setGrade(e.target.value)}>
-              <option value="Ungraded">Ungraded</option>
-              <option value="10">Gem Mint 10</option>
-              <option value="9.5">9.5</option>
-              <option value="9">9</option>
-              <option value="8">8</option>
-              <option value="7">7</option>
-            </select>
-          </label>
-          <label className="field">
-            <span className="field-label">Language</span>
-            <select className="field-input" value={language} onChange={(e) => setLanguage(e.target.value)}>
-              <option value="Any">Any</option>
-              <option value="English">English</option>
-              <option value="Japanese">Japanese</option>
-              <option value="Korean">Korean</option>
-              <option value="Chinese">Chinese</option>
-            </select>
-          </label>
-          <label className="field">
-            <span className="field-label">Sealed</span>
-            <select className="field-input" value={sealed} onChange={(e) => setSealed(e.target.value)}>
-              <option value="Any">Any</option>
-              <option value="Sealed only">Sealed only</option>
-              <option value="Not sealed">Not sealed</option>
-            </select>
-          </label>
-        </div>
+      <div className={`app-shell-grid ${detailPanelOpen ? "app-shell-grid--detail-open" : ""}`}>
+        <Sidebar
+          basket={basket}
+          onUpdatePaid={updateBasketPaid}
+          onUpdateMethod={updateBasketMethod}
+          onRemoveRow={removeBasketRow}
+        />
 
-        <p className="query-preview" aria-live="polite">
-          <strong>Search string:</strong> {composedQuery || "(add fields above)"}
-        </p>
+        <MainContent
+          composedQuery={composedQuery}
+          cardName={cardName}
+          setCardName={setCardName}
+          setName={setName}
+          setSetName={setSetName}
+          cardNumber={cardNumber}
+          setCardNumber={setCardNumber}
+          variantNotes={variantNotes}
+          setVariantNotes={setVariantNotes}
+          gradingCompany={gradingCompany}
+          setGradingCompany={setGradingCompany}
+          grade={grade}
+          setGrade={setGrade}
+          language={language}
+          setLanguage={setLanguage}
+          sealed={sealed}
+          setSealed={setSealed}
+          onGetCardValue={() => void getCardValue()}
+          liveSearch={liveSearch}
+          onLiveSearchChange={setLiveSearch}
+          searching={searching}
+          loadingCard={loadingCard}
+          historyApiBase={historyApiBase}
+          setHistoryApiBase={setHistoryApiBase}
+          historyApiKey={historyApiKey}
+          setHistoryApiKey={setHistoryApiKey}
+          onPersistHistorySettings={persistHistorySettings}
+          historySearchQuery={historySearchQuery}
+          setHistorySearchQuery={setHistorySearchQuery}
+          onRunHistorySearch={runHistorySearch}
+          historyLoading={historyLoading}
+          historyDetailLoading={historyDetailLoading}
+          historyError={historyError}
+          historySnap={historySnap}
+          filteredHistoryRows={filteredHistoryRows}
+          historyMarketFilter={historyMarketFilter}
+          setHistoryMarketFilter={setHistoryMarketFilter}
+          onLoadItemHistory={loadItemHistory}
+          historyDetail={historyDetail}
+          historyDetailForId={historyDetailForId}
+          pcApiEnvHint={pcApiEnvHint}
+          pcApiApiBase={pcApiApiBase}
+          setpcApiApiBase={setpcApiApiBase}
+          pcApiApiKey={pcApiApiKey}
+          setpcApiApiKey={setpcApiApiKey}
+          onPersistPcApiSettings={persistpcApiSettings}
+          pcApiSearchQuery={pcApiSearchQuery}
+          setpcApiSearchQuery={setpcApiSearchQuery}
+          onRunPcApiSearch={runpcApiPcSearch}
+          onRunPcApiCompare={runpcApiCompare}
+          pcApiLoading={pcApiLoading}
+          pcApiCompareLoading={pcApiCompareLoading}
+          pcApiError={pcApiError}
+          pcApiPcSnap={pcApiPcSnap}
+          pcApiCompareSnap={pcApiCompareSnap}
+          hits={hits}
+          selectedId={selectedId}
+          setSelectedId={setSelectedId}
+          lookupSource={lookupSource}
+          onLoadDetailsVps={loadDetailsVps}
+          onLoadDetailsOfficial={loadDetailsOfficial}
+          error={error}
+        />
 
-        <button
-          type="button"
-          className="btn-get-value"
-          onClick={() => void getCardValue()}
-          disabled={searching || loadingCard || !composedQuery}
-        >
-          {searching || loadingCard ? "Loading…" : "Get card value"}
-        </button>
-        <p className="muted small purchase-sheet-hint">
-          Uses your <strong>VPS scrape cache</strong> when <code>PC_API_BASE</code> / <code>PC_API_KEY</code> are set
-          (same as the panel below); otherwise falls back to the PriceCharting API token.
-        </p>
-      </section>
-
-      <section className="panel history-panel history-panel-main" aria-label="Recorded eBay sales">
-        <h2 className="history-heading-main">Recorded eBay sales (your crawler)</h2>
-        <p className="history-lede">
-          Search titles stored on your VPS - shows latest observation per listing with <strong>sold price</strong> when
-          captured.
-        </p>
-        <div className="history-fields">
-          <label className="history-label" htmlFor="history-api-base-main">
-            API base URL
-          </label>
-          <input
-            id="history-api-base-main"
-            type="url"
-            className="history-input"
-            placeholder="https://your-vps.example.com:3001"
-            value={historyApiBase}
-            onChange={(e) => setHistoryApiBase(e.target.value)}
-            onBlur={persistHistorySettings}
-            disabled={historyLoading || historyDetailLoading}
-            autoComplete="off"
+        {detailPanelOpen && (
+          <CardDetailPanel
+            loadingCard={loadingCard}
+            card={card}
+            lookupSource={lookupSource}
+            unifiedSales={unifiedSales}
+            unifiedAvg={unifiedAvg}
+            unifiedAvgCount={unifiedAvgCount}
+            basketSummaryLabel={basketSummaryLabel}
+            onAddToBasket={addToBasket}
           />
-          <label className="history-label" htmlFor="history-api-key-main">
-            API key
-          </label>
-          <input
-            id="history-api-key-main"
-            type="password"
-            className="history-input"
-            placeholder="Bearer token from VPS"
-            value={historyApiKey}
-            onChange={(e) => setHistoryApiKey(e.target.value)}
-            onBlur={persistHistorySettings}
-            disabled={historyLoading || historyDetailLoading}
-            autoComplete="off"
-          />
-        </div>
-
-        <div className="history-search-row">
-          <label className="history-search-label" htmlFor="history-q">
-            Search listings
-          </label>
-          <div className="history-search-controls">
-            <input
-              id="history-q"
-              type="search"
-              className="history-search-input"
-              placeholder="e.g. Charizard holo base, Pikachu promo..."
-              value={historySearchQuery}
-              onChange={(e) => setHistorySearchQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void runHistorySearch();
-              }}
-              disabled={historyLoading || historyDetailLoading}
-              autoComplete="off"
-            />
-            <button
-              type="button"
-              className="history-btn history-btn-secondary"
-              onClick={() => setHistorySearchQuery(composedQuery)}
-              disabled={!composedQuery || historyLoading || historyDetailLoading}
-              title="Copy the composed purchase-sheet string into the search box"
-            >
-              Use purchase sheet string
-            </button>
-            <button
-              type="button"
-              className="history-btn history-btn-primary"
-              onClick={() => void runHistorySearch()}
-              disabled={historyLoading || historyDetailLoading || !historySearchQuery.trim()}
-            >
-              {historyLoading ? "Searching..." : "Search"}
-            </button>
-          </div>
-        </div>
-
-        <div className="history-market-bar" role="group" aria-label="Filter by marketplace">
-          <span className="history-market-label">Market:</span>
-          {(
-            [
-              ["all", "All"],
-              ["uk", "UK"],
-              ["us", "US"],
-            ] as const
-          ).map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              className={`market-filter-btn ${historyMarketFilter === key ? "active" : ""}`}
-              onClick={() => setHistoryMarketFilter(key)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {historyError && (
-          <div className="history-error-banner">
-            <strong>eBay history API:</strong> {historyError}
-          </div>
         )}
-
-        {historySnap && filteredHistoryRows.length > 0 && (
-          <div className="history-results">
-            <p className="history-meta">
-              {filteredHistoryRows.length} of {historySnap.results.length} match "{historySnap.query}"
-              {historyMarketFilter !== "all" ? ` (${historyMarketFilter.toUpperCase()} only)` : ""}.
-            </p>
-            <div className="history-table-scroll">
-              <table className="history-table">
-                <thead>
-                  <tr>
-                    <th>Title</th>
-                    <th className="col-price">Sold price</th>
-                    <th>Market</th>
-                    <th>Seen</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredHistoryRows.map((r) => (
-                    <tr key={r.ebayItemId}>
-                      <td>
-                        <button type="button" className="linkish table-title-btn" onClick={() => openUrl(r.pageUrl)}>
-                          {r.title}
-                        </button>
-                      </td>
-                      <td className="history-price-cell">{formatHistoryPrice(r.priceDisplay)}</td>
-                      <td>{r.market}</td>
-                      <td className="muted small">{r.observedAt ?? "—"}</td>
-                      <td>
-                        <button
-                          type="button"
-                          className="linkish"
-                          onClick={() => void loadItemHistory(r.ebayItemId)}
-                          disabled={historyDetailLoading}
-                        >
-                          {historyDetailLoading && historyDetailForId === r.ebayItemId ? "Loading..." : "Timeline"}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-        {historySnap && filteredHistoryRows.length === 0 && !historyLoading && (
-          <p className="history-empty muted small">
-            {historySnap.results.length === 0
-              ? "No rows in the database for that query."
-              : "No rows for this market filter - try All."}
-          </p>
-        )}
-        {historyDetail && historyDetail.history.length > 0 && (
-          <div className="history-timeline">
-            <h3 className="timeline-title">
-              Listing {historyDetail.ebayItemId} - {historyDetail.history.length} observations
-            </h3>
-            <ul className="timeline-list">
-              {historyDetail.history.map((h, i) => (
-                <li key={`${h.observedAt ?? i}-${i}`}>
-                  <span className="timeline-date">{h.observedAt ?? "?"}</span>
-                  <span className="timeline-price">{formatHistoryPrice(h.priceDisplay)}</span>
-                  <span className="timeline-market">{h.market}</span>
-                  {h.detail && <span className="timeline-detail">{h.detail}</span>}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </section>
-
-      <section className="panel history-panel pcApi-panel" aria-label="Scraped PriceCharting via pcApi">
-        <h2 className="history-heading-main">Scraped PriceCharting + compare (VPS)</h2>
-        <p className="history-lede">
-          Uses your private VPS stack: <strong>/v1/pc/search</strong> and <strong>/v1/compare</strong>. Set{" "}
-          <code>PC_API_BASE</code> / <code>PC_API_KEY</code> in <code>.env</code>, or enter below.
-          {(pcApiEnvHint.hasEnvBase || pcApiEnvHint.hasEnvKey) && (
-            <span className="muted small"> Rust loaded defaults from env where set.</span>
-          )}
-        </p>
-        <div className="history-fields">
-          <label className="history-label" htmlFor="pcApi-api-base">
-            API base URL
-          </label>
-          <input
-            id="pcApi-api-base"
-            type="url"
-            className="history-input"
-            placeholder="https://your-vps.example.com:3001"
-            value={pcApiApiBase}
-            onChange={(e) => setpcApiApiBase(e.target.value)}
-            onBlur={persistpcApiSettings}
-            disabled={pcApiLoading || pcApiCompareLoading}
-            autoComplete="off"
-          />
-          <label className="history-label" htmlFor="pcApi-api-key">
-            API key (same as server API_KEY)
-          </label>
-          <input
-            id="pcApi-api-key"
-            type="password"
-            className="history-input"
-            placeholder={pcApiEnvHint.hasEnvKey ? "Using PC_API_KEY from .env (optional override)" : "Bearer secret"}
-            value={pcApiApiKey}
-            onChange={(e) => setpcApiApiKey(e.target.value)}
-            onBlur={persistpcApiSettings}
-            disabled={pcApiLoading || pcApiCompareLoading}
-            autoComplete="off"
-          />
-        </div>
-        <div className="history-search-row">
-          <label className="history-search-label" htmlFor="pcApi-q">
-            Search scraped DB / compare
-          </label>
-          <div className="history-search-controls">
-            <input
-              id="pcApi-q"
-              type="search"
-              className="history-search-input"
-              placeholder="e.g. Pikachu Base Set..."
-              value={pcApiSearchQuery}
-              onChange={(e) => setpcApiSearchQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void runpcApiPcSearch();
-              }}
-              disabled={pcApiLoading || pcApiCompareLoading}
-              autoComplete="off"
-            />
-            <button
-              type="button"
-              className="history-btn history-btn-secondary"
-              onClick={() => setpcApiSearchQuery(composedQuery)}
-              disabled={!composedQuery || pcApiLoading || pcApiCompareLoading}
-            >
-              Use purchase sheet string
-            </button>
-            <button
-              type="button"
-              className="history-btn history-btn-primary"
-              onClick={() => void runpcApiPcSearch()}
-              disabled={pcApiLoading || pcApiCompareLoading || !pcApiSearchQuery.trim()}
-            >
-              {pcApiLoading ? "Searching..." : "Search PC cache"}
-            </button>
-            <button
-              type="button"
-              className="history-btn history-btn-secondary"
-              onClick={() => void runpcApiCompare()}
-              disabled={pcApiCompareLoading || pcApiLoading || !pcApiSearchQuery.trim()}
-            >
-              {pcApiCompareLoading ? "Comparing..." : "Compare vs eBay comps"}
-            </button>
-          </div>
-        </div>
-        {pcApiError && (
-          <div className="history-error-banner">
-            <strong>VPS API:</strong> {pcApiError}
-          </div>
-        )}
-        {pcApiPcSnap && pcApiPcSnap.results.length > 0 && (
-          <div className="history-results">
-            <p className="history-meta">
-              PriceCharting scrape cache: {pcApiPcSnap.results.length} row(s) for "{pcApiPcSnap.query}".
-            </p>
-            <div className="history-table-scroll">
-              <table className="history-table">
-                <thead>
-                  <tr>
-                    <th>Thumb</th>
-                    <th>Title / meta</th>
-                    <th>Grades & prices</th>
-                    <th>Snapshot</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pcApiPcSnap.results.map((r) => (
-                    <tr key={r.pcProductId}>
-                      <td>
-                        {r.imageUrl ? (
-                          <img src={r.imageUrl} alt="" className="pcApi-thumb" />
-                        ) : (
-                          <span className="muted small">—</span>
-                        )}
-                      </td>
-                      <td>
-                        <button type="button" className="linkish table-title-btn" onClick={() => openUrl(r.productUrl)}>
-                          {r.title}
-                        </button>
-                        <div className="muted small pc-meta-line">
-                          {[r.consoleOrCategory, r.cardNumber, r.releaseDate, r.publisher]
-                            .filter(Boolean)
-                            .join(" · ") || "—"}
-                        </div>
-                      </td>
-                      <td className="muted small">{tiersPreview(r.tiers)}</td>
-                      <td className="muted small">{r.snapshotAt ?? "—"}</td>
-                      <td>
-                        <span className="muted small">id {r.pcProductId}</span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-        {pcApiPcSnap && pcApiPcSnap.results.length === 0 && !pcApiLoading && (
-          <p className="history-empty muted small">No scraped PriceCharting rows for that query - run the pc-crawler on the VPS.</p>
-        )}
-        {pcApiCompareSnap && (
-          <div className="compare-split">
-            <h3 className="timeline-title">eBay comps (same query)</h3>
-            <div className="history-table-scroll">
-              <table className="history-table">
-                <thead>
-                  <tr>
-                    <th>Title</th>
-                    <th className="col-price">Sold price</th>
-                    <th>Mkt</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pcApiCompareSnap.ebay.results.map((r) => (
-                    <tr key={r.ebayItemId}>
-                      <td>
-                        <button type="button" className="linkish table-title-btn" onClick={() => openUrl(r.pageUrl)}>
-                          {r.title}
-                        </button>
-                      </td>
-                      <td className="history-price-cell">{formatHistoryPrice(r.priceDisplay)}</td>
-                      <td>{r.market}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-      </section>
-
-      {hits.length > 1 && (
-        <section className="panel hits-panel">
-          <h2 className="panel-title">Choose product match</h2>
-          <p className="muted small">
-            {lookupSource === "vps"
-              ? "Multiple matches in your VPS scrape cache. Pick one, then load."
-              : "Multiple PriceCharting products matched your narrowed search. Pick one, then load."}
-          </p>
-          <ul className="hits-list">
-            {hits.map((h) => (
-              <li key={h.id}>
-                <label className="hit-row">
-                  <input
-                    type="radio"
-                    name="product"
-                    checked={selectedId === h.id}
-                    onChange={() => setSelectedId(h.id)}
-                  />
-                  <span>
-                    <strong>{h.productName}</strong>
-                    <span className="muted"> · {h.consoleName}</span>
-                    <span className="muted"> · id {h.id}</span>
-                  </span>
-                </label>
-              </li>
-            ))}
-          </ul>
-          <button
-            type="button"
-            className="primary"
-            onClick={() =>
-              selectedId &&
-              void (lookupSource === "vps" ? loadDetailsVps(selectedId) : loadDetailsOfficial(selectedId))
-            }
-            disabled={!selectedId || loadingCard || lookupSource == null}
-          >
-            {loadingCard ? "Loading..." : "Load selected card data"}
-          </button>
-        </section>
-      )}
-
-      {error && <div className="error-banner">{error}</div>}
-
-      {card && (
-        <main className="main">
-          <section className="panel card-actions-bar">
-            <div>
-              <strong>Loaded:</strong> {basketSummaryLabel}
-              {pickReferenceCents(card) != null && (
-                <span className="ref-price"> · Ref. {formatUsd(pickReferenceCents(card))}</span>
-              )}
-            </div>
-            <button type="button" className="primary" onClick={addToBasket}>
-              Add to buy basket
-            </button>
-          </section>
-
-          <section className="card-hero">
-            <div className="hero-image-wrap">
-              {card.product.imageUrl ? (
-                <img src={card.product.imageUrl} alt="" className="hero-image" />
-              ) : (
-                <div className="hero-placeholder">No image in PriceCharting product payload</div>
-              )}
-            </div>
-            <div className="hero-meta">
-              <h2>{card.product.productName}</h2>
-              <p className="muted">{card.product.consoleName}</p>
-              {card.product.genre && <p className="muted">Genre: {card.product.genre}</p>}
-              <button
-                type="button"
-                className="linkish"
-                onClick={() => openUrl(card.product.pricechartingSearchUrl)}
-              >
-                {lookupSource === "vps" ? "Open PriceCharting product page" : "Open PriceCharting search"}
-              </button>
-            </div>
-          </section>
-
-          {card.warnings.length > 0 && (
-            <ul className="warnings">
-              {card.warnings.map((w) => (
-                <li key={w}>{w}</li>
-              ))}
-            </ul>
-          )}
-
-          <section className="tiers-section">
-            <h3>{lookupSource === "vps" ? "Guide grades & prices (your VPS scrape)" : "Condition tiers (PriceCharting)"}</h3>
-            <p className="tier-intro muted">
-              {lookupSource === "vps"
-                ? "Structured grade rows from your cached snapshot (same data as the database). Marketplace sold tables are not replayed here."
-                : "Reference prices and recent sold rows from the PriceCharting marketplace per condition bucket (when available)."}
-            </p>
-            <div className="tier-list">
-              {card.tiers.map((tier) => (
-                <details key={tier.tierKey} className="tier" open={tier.tierKey === "loose"}>
-                  <summary>
-                    <span className="tier-title">{tier.label}</span>
-                    <span className="tier-price">{formatUsd(tier.priceCents ?? null)}</span>
-                  </summary>
-                  <div className="tier-body">
-                    {lookupSource === "vps" ? (
-                      <p className="muted small">Guide price from your latest VPS scrape snapshot for this grade.</p>
-                    ) : (
-                      <>
-                        <p className="muted small">
-                          API field: <code>{tier.priceField}</code>
-                          {tier.conditionId != null && (
-                            <>
-                              {" "}
-                              · Marketplace condition-id <code>{tier.conditionId}</code>
-                            </>
-                          )}
-                        </p>
-                        {tier.soldSectionNote && <p className="note">{tier.soldSectionNote}</p>}
-                        {tier.sold.length === 0 && !tier.soldSectionNote && (
-                          <p className="muted small">No sold rows returned for this bucket.</p>
-                        )}
-                        {tier.sold.length > 0 && (
-                          <table className="sold-table">
-                            <thead>
-                              <tr>
-                                <th>Sale date</th>
-                                <th>Price</th>
-                                <th>Condition</th>
-                                <th></th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {tier.sold.map((o) => (
-                                <tr key={o.offerId}>
-                                  <td>{o.saleTime ?? "—"}</td>
-                                  <td>{formatUsd(o.priceCents)}</td>
-                                  <td>
-                                    {[o.includeString, o.conditionString].filter(Boolean).join(" · ") || "—"}
-                                  </td>
-                                  <td>
-                                    {o.offerUrl && (
-                                      <button
-                                        type="button"
-                                        className="linkish"
-                                        onClick={() => openUrl(o.offerUrl)}
-                                      >
-                                        View
-                                      </button>
-                                    )}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </details>
-              ))}
-            </div>
-          </section>
-
-          <section className="ebay-section">
-            {lookupSource === "vps" && (
-              <div className="panel">
-                <h3>Recent eBay sold (last 30)</h3>
-                <p className="muted small">
-                  Average of last {unifiedAvgCount} sales: <strong>{formatUsdDollars(unifiedAvg)}</strong>
-                </p>
-                {unifiedSales.length === 0 ? (
-                  <p className="muted small">No recent sold rows found for this query.</p>
-                ) : (
-                  <div className="history-table-scroll">
-                    <table className="history-table">
-                      <thead>
-                        <tr>
-                          <th>Title</th>
-                          <th>Sold</th>
-                          <th>Market</th>
-                          <th>Seen</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {unifiedSales.map((r, i) => (
-                          <tr key={`${r.ebayItemId}-${i}`}>
-                            <td>
-                              <button type="button" className="linkish table-title-btn" onClick={() => openUrl(r.pageUrl)}>
-                                {r.title}
-                              </button>
-                            </td>
-                            <td>{r.priceDisplay ?? formatUsdDollars(r.priceValue ?? null)}</td>
-                            <td>{r.market}</td>
-                            <td className="muted small">{r.observedAt ?? "—"}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            )}
-            <h3>Active listings (eBay)</h3>
-            <p className="ebay-disclaimer">
-              Currently active listings on eBay (US, Pokémon TCG singles) - not completed sales.
-            </p>
-            {card.ebayActive.length === 0 ? (
-              <p className="muted">
-                {lookupSource === "vps"
-                  ? "Live eBay listings are not fetched in VPS scrape mode. Add EBAY_CLIENT_ID / EBAY_CLIENT_SECRET for active listings, or use Recorded eBay sales below."
-                  : "No listings returned (check credentials or try another card)."}
-              </p>
-            ) : (
-              <ul className="ebay-grid">
-                {card.ebayActive.map((it, i) => (
-                  <li key={i} className="ebay-card">
-                    <div className="ebay-thumb-wrap">
-                      {it.imageUrl ? (
-                        <img src={it.imageUrl} alt="" className="ebay-thumb" />
-                      ) : (
-                        <div className="ebay-thumb-placeholder" />
-                      )}
-                    </div>
-                    <div className="ebay-meta">
-                      <p className="ebay-title">{it.title}</p>
-                      <p className="ebay-price">{it.priceDisplay}</p>
-                      <p className="muted small">{it.condition}</p>
-                      <button type="button" className="linkish" onClick={() => openUrl(it.itemWebUrl)}>
-                        Open on eBay
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        </main>
-      )}
-
-      <section className="basket-section" aria-label="Buy basket">
-        <h2 className="basket-title">Buy basket / inventory</h2>
-        <div className="basket-table-wrap">
-          <table className="basket-table">
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>Card</th>
-                <th>Paid</th>
-                <th>Current value</th>
-                <th>Profit / loss</th>
-                <th>Method</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {basket.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="basket-empty-cell">
-                    No cards added yet.
-                  </td>
-                </tr>
-              ) : (
-                basket.map((row) => {
-                  const profit =
-                    row.paidCents != null && row.currentValueCents != null
-                      ? row.currentValueCents - row.paidCents
-                      : null;
-                  return (
-                    <tr key={row.id}>
-                      <td className="nowrap">{new Date(row.addedAt).toLocaleString()}</td>
-                      <td>{row.cardLabel}</td>
-                      <td>
-                        <input
-                          key={`paid-${row.id}-${row.paidCents ?? "x"}`}
-                          className="basket-money-input"
-                          type="text"
-                          inputMode="decimal"
-                          placeholder="0.00"
-                          aria-label="Paid"
-                          defaultValue={
-                            row.paidCents != null ? (row.paidCents / 100).toFixed(2) : ""
-                          }
-                          onBlur={(e) => updateBasketPaid(row.id, parseMoneyInput(e.target.value))}
-                        />
-                      </td>
-                      <td>{formatUsd(row.currentValueCents)}</td>
-                      <td className={profit != null && profit >= 0 ? "profit-pos" : profit != null ? "profit-neg" : ""}>
-                        {profit != null ? formatUsd(profit) : "—"}
-                      </td>
-                      <td>
-                        <select
-                          className="basket-method-select"
-                          value={row.method}
-                          onChange={(e) =>
-                            updateBasketMethod(row.id, e.target.value as BasketRow["method"])
-                          }
-                        >
-                          <option value="">—</option>
-                          <option value="cash">Cash</option>
-                          <option value="trade">Trade</option>
-                        </select>
-                      </td>
-                      <td>
-                        <button type="button" className="linkish" onClick={() => removeBasketRow(row.id)}>
-                          Remove
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      </div>
 
       {showAbout && (
         <div className="modal-backdrop" role="presentation" onClick={() => setShowAbout(false)}>
@@ -1633,6 +667,3 @@ export default function App() {
     </div>
   );
 }
-
-
-

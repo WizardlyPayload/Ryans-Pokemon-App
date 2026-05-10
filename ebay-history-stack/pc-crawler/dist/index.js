@@ -1,5 +1,6 @@
 import { chromium } from "playwright-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
+import { buildSessionProfile } from "./fingerprint.js";
 import { createPool, ensureSchema, upsertPcProduct } from "./db.js";
 chromium.use(StealthPlugin());
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -17,6 +18,8 @@ const PC_SEARCH_MAX_PAGES = !Number.isFinite(PC_SEARCH_MAX_PAGES_RAW) || PC_SEAR
 const PC_MIN_DELAY_MS = Math.max(500, Number(process.env.PC_MIN_DELAY_MS || 3000));
 const PC_MAX_DELAY_MS = Math.max(PC_MIN_DELAY_MS, Number(process.env.PC_MAX_DELAY_MS || 14000));
 const PC_LOOP_INTERVAL_MS = Math.max(60_000, Number(process.env.PC_LOOP_INTERVAL_MS || 3_600_000));
+/** Parallel product tabs per batch (same browser context). Keep low to reduce blocks; default 1 = sequential. */
+const PC_FETCH_CONCURRENCY = Math.min(4, Math.max(1, Number(process.env.PC_FETCH_CONCURRENCY ?? "1")));
 const PARSE_VERSION = process.env.PARSE_VERSION || "1";
 /** "prices" = price-guide search (card/product links). Set to "off" to omit. */
 const PC_SEARCH_TYPE = (process.env.PC_SEARCH_TYPE ?? "prices").trim().toLowerCase();
@@ -31,6 +34,38 @@ function buildPcSearchUrl(query, page = 1) {
 }
 function sleep(ms) {
     return new Promise((r) => setTimeout(r, ms));
+}
+/** Human-ish scroll: varied wheel deltas, pauses, occasional mouse jitter (not just scrollTo). */
+async function humanScroll(page) {
+    const height = await page.evaluate(() => document.body.scrollHeight);
+    const viewportH = await page.evaluate(() => window.innerHeight);
+    let current = 0;
+    while (current < height + viewportH * 0.35) {
+        if (Math.random() < 0.24) {
+            await page.mouse.move(randBetween(60, 560), randBetween(140, 480), {
+                steps: randBetween(4, 14),
+            });
+        }
+        const step = randBetween(55, Math.min(520, Math.max(120, height - current + 60)));
+        await page.mouse.wheel(0, step);
+        current += step;
+        await sleep(randBetween(85, 680));
+    }
+    await sleep(randBetween(120, 450));
+}
+function normalizePopulationSummary(raw) {
+    if (!raw || !raw.trim())
+        return null;
+    const t = raw.trim();
+    try {
+        const j = JSON.parse(t);
+        if (j && typeof j === "object" && !Array.isArray(j))
+            return j;
+    }
+    catch {
+        /* plain text */
+    }
+    return { text: t.slice(0, 8000) };
 }
 function randBetween(a, b) {
     return a + Math.floor(Math.random() * (b - a + 1));
@@ -126,6 +161,8 @@ async function extractProductPage(page, productUrl) {
             releaseDateRaw: null,
             cardNumberRaw: null,
             publisherRaw: null,
+            populationSummaryRaw: null,
+            cardVariantRaw: null,
         };
         out.image = document.querySelector('meta[property="og:image"]')?.getAttribute("content") || null;
         const h1 = document.querySelector("h1");
@@ -172,7 +209,7 @@ async function extractProductPage(page, productUrl) {
             const b = norm(cells[1].textContent);
             if (a.length === 0 || b.length === 0 || a.length > 80)
                 continue;
-            if (/release|card number|publisher|genre|console|developer/i.test(a)) {
+            if (/release|card number|publisher|genre|console|developer|population|variant|printing|edition|holo|psa|bgs|cert/i.test(a)) {
                 out.detailRows.push({ label: a, value: b.slice(0, 500) });
             }
         }
@@ -199,6 +236,21 @@ async function extractProductPage(page, productUrl) {
             if (bp)
                 out.publisherRaw = norm(bp[1]).slice(0, 200);
         }
+        let populationSummaryRaw = null;
+        let cardVariantRaw = null;
+        for (const row of out.detailRows) {
+            const lab = row.label.trim();
+            const low = lab.toLowerCase();
+            if (/population|pop\s*report|psa\s*pop|bgs\s*pop|graded\s*population|how\s*many/i.test(low)) {
+                populationSummaryRaw = row.value.trim().slice(0, 2000);
+            }
+            if (/variant|printing|edition|holo|reverse|1st|shadowless|promo|error|foil/i.test(low)) {
+                const bit = `${lab}: ${row.value}`.trim().slice(0, 400);
+                cardVariantRaw = cardVariantRaw ? `${cardVariantRaw} · ${bit}` : bit;
+            }
+        }
+        out.populationSummaryRaw = populationSummaryRaw;
+        out.cardVariantRaw = cardVariantRaw ? cardVariantRaw.slice(0, 2000) : null;
         const gradeMap = new Map();
         function addGrade(grade, priceDisplay) {
             const g = norm(grade);
@@ -275,8 +327,7 @@ async function collectGameLinks(page, searchUrl) {
     catch {
         /* hydrate / bot page — try scroll + HTML fallback below */
     }
-    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-    await sleep(randBetween(400, 1200));
+    await humanScroll(page);
     const hrefsFromDom = await page.$$eval("a[href]", (anchors) => {
         const set = new Set();
         const origin = "https://www.pricecharting.com";
@@ -335,13 +386,62 @@ async function collectGameLinks(page, searchUrl) {
     }
     return [...fromHtml];
 }
-async function runBatch(browser, pool) {
-    const ctx = await browser.newContext({
-        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        viewport: { width: 1280, height: 800 },
+async function scrapeProductUrl(page, pool, href) {
+    await sleep(randBetween(PC_MIN_DELAY_MS, PC_MAX_DELAY_MS));
+    await page.goto(href, { waitUntil: "domcontentloaded", timeout: 90_000 });
+    await sleep(randBetween(400, 1200));
+    const data = await extractProductPage(page, href);
+    if (!data.id) {
+        console.log(JSON.stringify({ msg: "pc_skip_no_id", href }));
+        return false;
+    }
+    const urlObj = new URL(href);
+    const slug = urlObj.pathname.split("/").filter(Boolean).pop() || "";
+    const title = normalizeProductTitle(data.title) || slug;
+    const releaseDate = parsePgDate(data.releaseDateRaw) || parsePgDate(detailValue(data.detailRows, /release date/i));
+    const cardNumber = nonEmpty(data.cardNumberRaw || detailValue(data.detailRows, /card number/i)) ||
+        extractCardFromTitle(title);
+    const publisher = nonEmpty(data.publisherRaw || detailValue(data.detailRows, /publisher/i));
+    const populationSummary = normalizePopulationSummary(data.populationSummaryRaw);
+    const cardVariant = nonEmpty(data.cardVariantRaw);
+    const tiers = {
+        gridText: data.tierText,
+        grades: data.grades,
+    };
+    const extras = {
+        sourceUrl: href,
+        detailRows: data.detailRows.slice(0, 40),
+    };
+    await upsertPcProduct(pool, {
+        pcProductId: data.id,
+        slug,
+        productUrl: href,
+        title,
+        consoleOrCategory: data.console,
+        imageUrl: data.image,
+        cardNumber,
+        releaseDate,
+        publisher,
+        cardVariant,
+        populationSummary,
+        tiers,
+        extras,
+        parseVersion: PARSE_VERSION,
     });
-    const page = await ctx.newPage();
+    console.log(JSON.stringify({ msg: "pc_stored", pcProductId: data.id, title: data.title }));
+    return true;
+}
+async function runBatch(browser, pool) {
+    const profile = buildSessionProfile();
+    const ctx = await browser.newContext({
+        userAgent: profile.userAgent,
+        viewport: profile.viewport,
+        locale: profile.locale,
+        timezoneId: profile.timezoneId,
+        extraHTTPHeaders: profile.extraHTTPHeaders,
+    });
     try {
+        const navPage = await ctx.newPage();
         const allLinks = [];
         const seen = new Set();
         let pagesVisited = 0;
@@ -349,7 +449,7 @@ async function runBatch(browser, pool) {
             if (PC_SEARCH_PAGES_PER_RUN > 0 && searchPage > PC_SEARCH_PAGES_PER_RUN)
                 break;
             const searchUrl = buildPcSearchUrl(PC_SEARCH_QUERY, searchPage);
-            const links = await collectGameLinks(page, searchUrl);
+            const links = await collectGameLinks(navPage, searchUrl);
             pagesVisited += 1;
             for (const href of links) {
                 if (!seen.has(href)) {
@@ -360,8 +460,10 @@ async function runBatch(browser, pool) {
             if (links.length === 0)
                 break;
         }
+        await navPage.close();
         const effectiveCap = PC_PRODUCTS_PER_RUN > 0 ? PC_PRODUCTS_PER_RUN : allLinks.length;
         const slice = allLinks.slice(0, effectiveCap);
+        const workers = Math.min(PC_FETCH_CONCURRENCY, Math.max(1, slice.length));
         console.log(JSON.stringify({
             msg: "pc_search_links",
             query: PC_SEARCH_QUERY,
@@ -370,49 +472,39 @@ async function runBatch(browser, pool) {
             count: allLinks.length,
             pagesVisited,
             cappedTo: effectiveCap,
+            fetchConcurrency: workers,
+            sessionUserAgent: profile.userAgent.slice(0, 96),
         }));
         let stored = 0;
-        for (const href of slice) {
-            await sleep(randBetween(PC_MIN_DELAY_MS, PC_MAX_DELAY_MS));
-            await page.goto(href, { waitUntil: "domcontentloaded", timeout: 90_000 });
-            await sleep(randBetween(400, 1200));
-            const data = await extractProductPage(page, href);
-            if (!data.id) {
-                console.log(JSON.stringify({ msg: "pc_skip_no_id", href }));
-                continue;
+        if (workers <= 1) {
+            const page = await ctx.newPage();
+            try {
+                for (const href of slice) {
+                    if (await scrapeProductUrl(page, pool, href))
+                        stored += 1;
+                }
             }
-            const urlObj = new URL(href);
-            const slug = urlObj.pathname.split("/").filter(Boolean).pop() || "";
-            const title = normalizeProductTitle(data.title) || slug;
-            const releaseDate = parsePgDate(data.releaseDateRaw) ||
-                parsePgDate(detailValue(data.detailRows, /release date/i));
-            const cardNumber = nonEmpty(data.cardNumberRaw || detailValue(data.detailRows, /card number/i)) ||
-                extractCardFromTitle(title);
-            const publisher = nonEmpty(data.publisherRaw || detailValue(data.detailRows, /publisher/i));
-            const tiers = {
-                gridText: data.tierText,
-                grades: data.grades,
-            };
-            const extras = {
-                sourceUrl: href,
-                detailRows: data.detailRows.slice(0, 40),
-            };
-            await upsertPcProduct(pool, {
-                pcProductId: data.id,
-                slug,
-                productUrl: href,
-                title,
-                consoleOrCategory: data.console,
-                imageUrl: data.image,
-                cardNumber,
-                releaseDate,
-                publisher,
-                tiers,
-                extras,
-                parseVersion: PARSE_VERSION,
-            });
-            stored += 1;
-            console.log(JSON.stringify({ msg: "pc_stored", pcProductId: data.id, title: data.title }));
+            finally {
+                await page.close();
+            }
+        }
+        else {
+            let cursor = 0;
+            await Promise.all(Array.from({ length: workers }, async () => {
+                const page = await ctx.newPage();
+                try {
+                    while (true) {
+                        const i = cursor++;
+                        if (i >= slice.length)
+                            break;
+                        if (await scrapeProductUrl(page, pool, slice[i]))
+                            stored += 1;
+                    }
+                }
+                finally {
+                    await page.close();
+                }
+            }));
         }
         console.log(JSON.stringify({ msg: "pc_batch_done", stored, attempted: slice.length }));
     }
@@ -435,6 +527,7 @@ async function main() {
         productsPerRun: PC_PRODUCTS_PER_RUN,
         searchPagesPerRun: PC_SEARCH_PAGES_PER_RUN,
         searchMaxPages: PC_SEARCH_MAX_PAGES,
+        fetchConcurrency: PC_FETCH_CONCURRENCY,
         loopIntervalMs: PC_LOOP_INTERVAL_MS,
         parseVersion: PARSE_VERSION,
     }));

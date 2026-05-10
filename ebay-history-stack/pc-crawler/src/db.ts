@@ -5,7 +5,12 @@ import pg from "pg";
 
 const { Pool } = pg;
 
-const MIGRATION_BASENAMES = ["001_init.sql", "002_pc_scrape.sql", "003_pc_product_metadata.sql"];
+const MIGRATION_BASENAMES = [
+  "001_init.sql",
+  "002_pc_scrape.sql",
+  "003_pc_product_metadata.sql",
+  "004_pc_population_variant.sql",
+];
 const ADV_LOCK_K1 = 8129347;
 const ADV_LOCK_K2 = 291834;
 
@@ -70,6 +75,8 @@ export async function upsertPcProduct(
     cardNumber: string | null;
     releaseDate: string | null;
     publisher: string | null;
+    cardVariant: string | null;
+    populationSummary: Record<string, unknown> | null;
     tiers: Record<string, unknown>;
     extras: Record<string, unknown>;
     parseVersion: string;
@@ -78,9 +85,9 @@ export async function upsertPcProduct(
   await pool.query(
     `INSERT INTO pc_products (
        pc_product_id, slug, product_url, title, console_or_category, image_url,
-       card_number, release_date, publisher, last_seen_at
+       card_number, release_date, publisher, card_variant, population_summary, last_seen_at
      )
-     VALUES ($1::bigint, $2, $3, $4, $5, $6, $7, $8::date, $9, now())
+     VALUES ($1::bigint, $2, $3, $4, $5, $6, $7, $8::date, $9, $10, $11::jsonb, now())
      ON CONFLICT (pc_product_id) DO UPDATE SET
        slug = COALESCE(EXCLUDED.slug, pc_products.slug),
        product_url = EXCLUDED.product_url,
@@ -90,6 +97,8 @@ export async function upsertPcProduct(
        card_number = COALESCE(EXCLUDED.card_number, pc_products.card_number),
        release_date = COALESCE(EXCLUDED.release_date, pc_products.release_date),
        publisher = COALESCE(EXCLUDED.publisher, pc_products.publisher),
+       card_variant = COALESCE(EXCLUDED.card_variant, pc_products.card_variant),
+       population_summary = COALESCE(EXCLUDED.population_summary, pc_products.population_summary),
        last_seen_at = now()`,
     [
       row.pcProductId,
@@ -101,6 +110,8 @@ export async function upsertPcProduct(
       row.cardNumber,
       row.releaseDate,
       row.publisher,
+      row.cardVariant,
+      row.populationSummary == null ? null : JSON.stringify(row.populationSummary),
     ],
   );
   await pool.query(

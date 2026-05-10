@@ -95,6 +95,8 @@ app.get("/v1/pc/search", async (request) => {
        p.card_number AS "cardNumber",
        p.release_date AS "releaseDate",
        p.publisher,
+       p.card_variant AS "cardVariant",
+       p.population_summary AS "populationSummary",
        s.tiers,
        s.observed_at AS "snapshotAt",
        s.parse_version AS "parseVersion"
@@ -135,6 +137,8 @@ app.get<{ Params: { id: string } }>("/v1/pc/product/:id", async (request, reply)
        card_number AS "cardNumber",
        release_date AS "releaseDate",
        publisher,
+       card_variant AS "cardVariant",
+       population_summary AS "populationSummary",
        first_seen_at AS "firstSeenAt",
        last_seen_at AS "lastSeenAt"
      FROM pc_products WHERE pc_product_id = $1::bigint`,
@@ -175,6 +179,8 @@ app.get("/v1/compare", async (request) => {
        p.card_number AS "cardNumber",
        p.release_date AS "releaseDate",
        p.publisher,
+       p.card_variant AS "cardVariant",
+       p.population_summary AS "populationSummary",
        s.tiers,
        s.observed_at AS "snapshotAt",
        s.parse_version AS "parseVersion"
@@ -234,6 +240,8 @@ app.get("/v1/unified-search", async (request) => {
        p.card_number AS "cardNumber",
        p.release_date AS "releaseDate",
        p.publisher,
+       p.card_variant AS "cardVariant",
+       p.population_summary AS "populationSummary",
        p.first_seen_at AS "firstSeenAt",
        p.last_seen_at AS "lastSeenAt"
      FROM pc_products p
