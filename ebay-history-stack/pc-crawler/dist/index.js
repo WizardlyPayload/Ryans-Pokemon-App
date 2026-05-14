@@ -18,12 +18,24 @@ const PC_SEARCH_MAX_PAGES = !Number.isFinite(PC_SEARCH_MAX_PAGES_RAW) || PC_SEAR
 const PC_MIN_DELAY_MS = Math.max(500, Number(process.env.PC_MIN_DELAY_MS || 3000));
 const PC_MAX_DELAY_MS = Math.max(PC_MIN_DELAY_MS, Number(process.env.PC_MAX_DELAY_MS || 14000));
 const PC_LOOP_INTERVAL_MS = Math.max(60_000, Number(process.env.PC_LOOP_INTERVAL_MS || 3_600_000));
-/** Parallel product tabs per batch (same browser context). Keep low to reduce blocks; default 1 = sequential. */
-const PC_FETCH_CONCURRENCY = Math.min(4, Math.max(1, Number(process.env.PC_FETCH_CONCURRENCY ?? "1")));
+/** Parallel product tabs per batch (same browser context). Default 2; cap 6. */
+const PC_FETCH_CONCURRENCY = Math.min(6, Math.max(1, Number(process.env.PC_FETCH_CONCURRENCY ?? "2")));
+/** Parallel PriceCharting search-result pages per wave (same context). Default 3; cap 6. */
+const PC_SEARCH_PAGE_CONCURRENCY = Math.min(6, Math.max(1, Number(process.env.PC_SEARCH_PAGE_CONCURRENCY ?? "3")));
 const PARSE_VERSION = process.env.PARSE_VERSION || "1";
 /** "prices" = price-guide search (card/product links). Set to "off" to omit. */
 const PC_SEARCH_TYPE = (process.env.PC_SEARCH_TYPE ?? "prices").trim().toLowerCase();
 const PC_BASE = "https://www.pricecharting.com";
+/**
+ * `search` = paginated `/search-products` (still filtered to Pokémon `/game/` URLs when PC_ONLY_POKEMON_GAME_URLS).
+ * `pokemon_category` = open the TCG hub, collect `/console/pokemon-*` set pages, harvest `/game/` card links from each checklist.
+ */
+const PC_DISCOVERY_MODE = (process.env.PC_DISCOVERY_MODE ?? "pokemon_category").trim().toLowerCase();
+const PC_CATEGORY_URL = (process.env.PC_CATEGORY_URL || `${PC_BASE}/category/pokemon-cards`).trim();
+/** Max `/console/pokemon-*` set pages to open per batch for link harvest; 0 = all links found on the category page. */
+const PC_CATEGORY_MAX_SET_PAGES = Math.max(0, Number(process.env.PC_CATEGORY_MAX_SET_PAGES ?? "0"));
+/** When true, only keep product URLs under `/game/pokemon` (excludes Magic, Yu-Gi-Oh, video games, etc.). */
+const PC_ONLY_POKEMON_GAME_URLS = (process.env.PC_ONLY_POKEMON_GAME_URLS ?? "true").toLowerCase() === "true";
 function buildPcSearchUrl(query, page = 1) {
     const q = encodeURIComponent(query);
     const pageParam = page > 1 ? `&page=${page}` : "";
@@ -318,9 +330,72 @@ async function extractProductPage(page, productUrl) {
         return out;
     }, productUrl);
 }
-async function collectGameLinks(page, searchUrl) {
-    await page.goto(searchUrl, { waitUntil: "load", timeout: 90_000 });
-    await sleep(randBetween(800, 2000));
+function usesPokemonCategoryDiscovery() {
+    const m = PC_DISCOVERY_MODE;
+    return m === "pokemon_category" || m === "category" || m === "pokemon";
+}
+function filterPokemonGameUrls(hrefs) {
+    if (!PC_ONLY_POKEMON_GAME_URLS)
+        return hrefs;
+    return hrefs.filter((h) => {
+        try {
+            return new URL(h).pathname.toLowerCase().startsWith("/game/pokemon");
+        }
+        catch {
+            return false;
+        }
+    });
+}
+async function extractPokemonConsoleLinksFromOpenPage(page) {
+    const dom = await page.$$eval("a[href]", (anchors) => {
+        const set = new Set();
+        const origin = "https://www.pricecharting.com";
+        for (const a of anchors) {
+            const raw = a.getAttribute("href") || "";
+            if (!raw.includes("/console/"))
+                continue;
+            try {
+                const u = new URL(raw, origin);
+                if (!u.hostname.endsWith("pricecharting.com"))
+                    continue;
+                if (!/^\/console\/pokemon/i.test(u.pathname))
+                    continue;
+                set.add(`${u.origin}${u.pathname}`.split("#")[0]);
+            }
+            catch {
+                /* skip */
+            }
+        }
+        return [...set];
+    });
+    if (dom.length > 0)
+        return dom;
+    const html = await page.content();
+    const fromHtml = new Set();
+    const absRe = /https?:\/\/(?:www\.)?pricecharting\.com\/console\/(pokemon[^"'>\s#?]+)/gi;
+    let m;
+    while ((m = absRe.exec(html)) !== null) {
+        try {
+            const u = new URL(`https://www.pricecharting.com/console/${m[1]}`);
+            fromHtml.add(`${u.origin}${u.pathname}`);
+        }
+        catch {
+            /* skip */
+        }
+    }
+    const relRe = /(?:href|\shref)=["'](\/console\/pokemon[^"'#?]+)/gi;
+    while ((m = relRe.exec(html)) !== null) {
+        try {
+            const u = new URL(m[1], PC_BASE);
+            fromHtml.add(`${u.origin}${u.pathname}`.split("#")[0]);
+        }
+        catch {
+            /* skip */
+        }
+    }
+    return [...fromHtml];
+}
+async function extractPcGameLinksFromOpenPage(page, emptyLog) {
     try {
         await page.waitForSelector('a[href*="/game/"]', { timeout: 60_000 });
     }
@@ -371,26 +446,141 @@ async function collectGameLinks(page, searchUrl) {
             /* skip */
         }
     }
-    if (fromHtml.size === 0) {
+    if (fromHtml.size === 0 && emptyLog) {
         const probe = await page.evaluate(() => ({
             title: document.title,
             anchorCount: document.querySelectorAll("a").length,
             bodyTextLen: (document.body?.innerText || "").length,
         }));
         console.log(JSON.stringify({
-            msg: "pc_search_no_links",
-            searchUrl,
+            msg: emptyLog.msg,
+            url: emptyLog.url,
             ...probe,
             hint: "No /game/ links in DOM or HTML. Often blocked/challenge page, or results still loading — check VPS IP / add wait.",
         }));
     }
     return [...fromHtml];
 }
+async function collectGameLinks(page, searchUrl) {
+    await page.goto(searchUrl, { waitUntil: "load", timeout: 90_000 });
+    await sleep(randBetween(800, 2000));
+    return extractPcGameLinksFromOpenPage(page, { msg: "pc_search_no_links", url: searchUrl });
+}
+async function discoverPokemonCategoryLinks(ctx) {
+    const catPage = await ctx.newPage();
+    let pagesVisited = 0;
+    let consoleUrls = [];
+    try {
+        await catPage.goto(PC_CATEGORY_URL, { waitUntil: "load", timeout: 90_000 });
+        pagesVisited += 1;
+        await sleep(randBetween(800, 2000));
+        try {
+            await catPage.waitForSelector('a[href*="/console/pokemon"]', { timeout: 60_000 });
+        }
+        catch {
+            /* */
+        }
+        await humanScroll(catPage);
+        consoleUrls = await extractPokemonConsoleLinksFromOpenPage(catPage);
+        if (consoleUrls.length === 0) {
+            await sleep(randBetween(1200, 2200));
+            await humanScroll(catPage);
+            consoleUrls = await extractPokemonConsoleLinksFromOpenPage(catPage);
+        }
+    }
+    finally {
+        await catPage.close();
+    }
+    if (consoleUrls.length === 0) {
+        console.log(JSON.stringify({
+            msg: "pc_category_no_console_links",
+            categoryUrl: PC_CATEGORY_URL,
+            hint: "No /console/pokemon-* links on category page — layout change, block, or wrong PC_CATEGORY_URL.",
+        }));
+    }
+    consoleUrls = [...new Set(consoleUrls)].sort((a, b) => a.localeCompare(b));
+    const setCap = PC_CATEGORY_MAX_SET_PAGES;
+    if (setCap > 0) {
+        consoleUrls = consoleUrls.slice(0, setCap);
+    }
+    const seenGame = new Set();
+    const conc = PC_SEARCH_PAGE_CONCURRENCY;
+    for (let i = 0; i < consoleUrls.length; i += conc) {
+        const wave = consoleUrls.slice(i, i + conc);
+        const gameChunks = await Promise.all(wave.map(async (setUrl) => {
+            const p = await ctx.newPage();
+            try {
+                await p.goto(setUrl, { waitUntil: "load", timeout: 90_000 });
+                await sleep(randBetween(400, 1400));
+                return await extractPcGameLinksFromOpenPage(p);
+            }
+            finally {
+                await p.close();
+            }
+        }));
+        pagesVisited += wave.length;
+        for (const chunk of gameChunks) {
+            for (const h of chunk) {
+                seenGame.add(h);
+            }
+        }
+    }
+    if (consoleUrls.length > 0 && seenGame.size === 0) {
+        console.log(JSON.stringify({
+            msg: "pc_category_sets_yielded_no_game_links",
+            setsOpened: consoleUrls.length,
+            hint: "Set checklist pages opened but no /game/ links parsed — likely block or layout change.",
+        }));
+    }
+    return { links: [...seenGame], pagesVisited, consoleSetUrls: consoleUrls.length };
+}
+/** Grade / price grid lives on each `/game/...` product page — not on search results. */
+async function waitForProductGradeGrid(page, timeoutMs) {
+    try {
+        await page.waitForFunction(() => {
+            for (const table of document.querySelectorAll("table")) {
+                const t = table.innerText || "";
+                if (!/\$/.test(t) || !/Ungraded|PSA|Grade|BGS|CGC|SGC/i.test(t))
+                    continue;
+                const low = t.toLowerCase();
+                if (/volume:\s*\d+\s*sales/.test(low))
+                    continue;
+                if (/sales per (week|day|month|year)/.test(low))
+                    continue;
+                if ((low.match(/\bvolume:/g) || []).length >= 2)
+                    continue;
+                return true;
+            }
+            return false;
+        }, { timeout: timeoutMs });
+    }
+    catch {
+        /* timed out — still run extractor; may be blocked or layout changed */
+    }
+}
+/**
+ * Open the PriceCharting **product** URL (not search), let the grade table hydrate, then scrape.
+ * Tiers JSON in DB always originates from this path — search pages only collect `/game/` links.
+ */
+async function loadProductPageForExtraction(page, href) {
+    await page.goto(href, { waitUntil: "load", timeout: 90_000 });
+    await sleep(randBetween(600, 1400));
+    await waitForProductGradeGrid(page, 28_000);
+    await humanScroll(page);
+    await sleep(randBetween(500, 1100));
+}
 async function scrapeProductUrl(page, pool, href) {
     await sleep(randBetween(PC_MIN_DELAY_MS, PC_MAX_DELAY_MS));
-    await page.goto(href, { waitUntil: "domcontentloaded", timeout: 90_000 });
-    await sleep(randBetween(400, 1200));
-    const data = await extractProductPage(page, href);
+    await loadProductPageForExtraction(page, href);
+    let data = await extractProductPage(page, href);
+    if (data.grades.length === 0) {
+        await sleep(randBetween(1200, 2200));
+        await humanScroll(page);
+        await sleep(randBetween(400, 900));
+        const retry = await extractProductPage(page, href);
+        if (retry.grades.length > data.grades.length)
+            data = retry;
+    }
     if (!data.id) {
         console.log(JSON.stringify({ msg: "pc_skip_no_id", href }));
         return false;
@@ -428,7 +618,21 @@ async function scrapeProductUrl(page, pool, href) {
         extras,
         parseVersion: PARSE_VERSION,
     });
-    console.log(JSON.stringify({ msg: "pc_stored", pcProductId: data.id, title: data.title }));
+    if (data.grades.length === 0) {
+        console.log(JSON.stringify({
+            msg: "pc_product_no_grade_rows",
+            href,
+            pcProductId: data.id,
+            hint: "Opened product page but extractor found no grade table — layout change, block, or lazy content.",
+        }));
+    }
+    console.log(JSON.stringify({
+        msg: "pc_stored",
+        pcProductId: data.id,
+        title: data.title,
+        gradeRows: data.grades.length,
+        source: "product_page",
+    }));
     return true;
 }
 async function runBatch(browser, pool) {
@@ -441,34 +645,91 @@ async function runBatch(browser, pool) {
         extraHTTPHeaders: profile.extraHTTPHeaders,
     });
     try {
-        const navPage = await ctx.newPage();
-        const allLinks = [];
-        const seen = new Set();
+        let allLinks = [];
         let pagesVisited = 0;
-        for (let searchPage = 1; searchPage <= PC_SEARCH_MAX_PAGES; searchPage++) {
-            if (PC_SEARCH_PAGES_PER_RUN > 0 && searchPage > PC_SEARCH_PAGES_PER_RUN)
-                break;
-            const searchUrl = buildPcSearchUrl(PC_SEARCH_QUERY, searchPage);
-            const links = await collectGameLinks(navPage, searchUrl);
-            pagesVisited += 1;
-            for (const href of links) {
-                if (!seen.has(href)) {
-                    seen.add(href);
-                    allLinks.push(href);
-                }
-            }
-            if (links.length === 0)
-                break;
+        let discoveryLog;
+        if (usesPokemonCategoryDiscovery()) {
+            const cat = await discoverPokemonCategoryLinks(ctx);
+            allLinks = cat.links;
+            pagesVisited = cat.pagesVisited;
+            discoveryLog = {
+                msg: "pc_discovery_links",
+                discoveryMode: PC_DISCOVERY_MODE,
+                categoryUrl: PC_CATEGORY_URL,
+                consoleSetUrlsHarvested: cat.consoleSetUrls,
+                categoryMaxSetPages: PC_CATEGORY_MAX_SET_PAGES,
+            };
         }
-        await navPage.close();
+        else {
+            if (PC_DISCOVERY_MODE !== "search" &&
+                PC_DISCOVERY_MODE !== "off" &&
+                PC_DISCOVERY_MODE !== "") {
+                console.log(JSON.stringify({
+                    msg: "pc_discovery_mode_fallback_search",
+                    requested: PC_DISCOVERY_MODE,
+                }));
+            }
+            const seen = new Set();
+            let searchPage = 1;
+            while (searchPage <= PC_SEARCH_MAX_PAGES) {
+                if (PC_SEARCH_PAGES_PER_RUN > 0 && searchPage > PC_SEARCH_PAGES_PER_RUN)
+                    break;
+                const waveEnd = Math.min(searchPage + PC_SEARCH_PAGE_CONCURRENCY - 1, PC_SEARCH_MAX_PAGES);
+                const pageNums = [];
+                for (let p = searchPage; p <= waveEnd; p++) {
+                    if (PC_SEARCH_PAGES_PER_RUN > 0 && p > PC_SEARCH_PAGES_PER_RUN)
+                        break;
+                    pageNums.push(p);
+                }
+                if (pageNums.length === 0)
+                    break;
+                const waveResults = await Promise.all(pageNums.map(async (pg) => {
+                    const p = await ctx.newPage();
+                    try {
+                        const searchUrl = buildPcSearchUrl(PC_SEARCH_QUERY, pg);
+                        const links = await collectGameLinks(p, searchUrl);
+                        return { pg, links };
+                    }
+                    finally {
+                        await p.close();
+                    }
+                }));
+                waveResults.sort((a, b) => a.pg - b.pg);
+                let hitEmpty = false;
+                for (const { pg, links } of waveResults) {
+                    pagesVisited += 1;
+                    for (const href of links) {
+                        if (!seen.has(href)) {
+                            seen.add(href);
+                            allLinks.push(href);
+                        }
+                    }
+                    if (links.length === 0) {
+                        hitEmpty = true;
+                        break;
+                    }
+                }
+                if (hitEmpty)
+                    break;
+                searchPage = pageNums[pageNums.length - 1] + 1;
+            }
+            discoveryLog = {
+                msg: "pc_discovery_links",
+                discoveryMode: "search",
+                query: PC_SEARCH_QUERY,
+                searchUrl: buildPcSearchUrl(PC_SEARCH_QUERY, 1),
+                searchType: PC_SEARCH_TYPE || null,
+            };
+        }
+        const beforeFilter = allLinks.length;
+        allLinks = filterPokemonGameUrls(allLinks);
         const effectiveCap = PC_PRODUCTS_PER_RUN > 0 ? PC_PRODUCTS_PER_RUN : allLinks.length;
         const slice = allLinks.slice(0, effectiveCap);
         const workers = Math.min(PC_FETCH_CONCURRENCY, Math.max(1, slice.length));
         console.log(JSON.stringify({
-            msg: "pc_search_links",
-            query: PC_SEARCH_QUERY,
-            searchUrl: buildPcSearchUrl(PC_SEARCH_QUERY, 1),
-            searchType: PC_SEARCH_TYPE || null,
+            ...discoveryLog,
+            onlyPokemonGameUrls: PC_ONLY_POKEMON_GAME_URLS,
+            countBeforePokemonFilter: beforeFilter,
             count: allLinks.length,
             pagesVisited,
             cappedTo: effectiveCap,
@@ -522,12 +783,17 @@ async function main() {
     console.log(JSON.stringify({
         msg: "pc_crawler_start",
         enabled: PC_CRAWLER_ENABLED,
+        discoveryMode: PC_DISCOVERY_MODE,
+        categoryUrl: PC_CATEGORY_URL,
+        categoryMaxSetPages: PC_CATEGORY_MAX_SET_PAGES,
+        onlyPokemonGameUrls: PC_ONLY_POKEMON_GAME_URLS,
         searchQuery: PC_SEARCH_QUERY,
         searchType: PC_SEARCH_TYPE || null,
         productsPerRun: PC_PRODUCTS_PER_RUN,
         searchPagesPerRun: PC_SEARCH_PAGES_PER_RUN,
         searchMaxPages: PC_SEARCH_MAX_PAGES,
         fetchConcurrency: PC_FETCH_CONCURRENCY,
+        searchPageConcurrency: PC_SEARCH_PAGE_CONCURRENCY,
         loopIntervalMs: PC_LOOP_INTERVAL_MS,
         parseVersion: PARSE_VERSION,
     }));

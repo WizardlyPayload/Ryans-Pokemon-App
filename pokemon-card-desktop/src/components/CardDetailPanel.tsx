@@ -69,6 +69,16 @@ export function CardDetailPanel({
             <h2>{card.product.productName}</h2>
             <p className="muted">{card.product.consoleName}</p>
             {card.product.genre && <p className="muted">Genre: {card.product.genre}</p>}
+            {lookupSource === "vps" && card.product.cardVariant && (
+              <p className="muted small">
+                <strong>Variant:</strong> {card.product.cardVariant}
+              </p>
+            )}
+            {lookupSource === "vps" && card.product.populationSummaryText && (
+              <p className="muted small">
+                <strong>Population:</strong> {card.product.populationSummaryText}
+              </p>
+            )}
             <button
               type="button"
               className="linkish"

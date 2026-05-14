@@ -5,8 +5,10 @@ import type {
   MarketCompareSnapshot,
   PcSearchSnapshot,
   ProductSummary,
+  UnifiedSearchSnapshot,
 } from "../types";
 import { formatHistoryPrice, tiersPreview } from "../lib/cardAppUtils";
+import { UnifiedMarketHub } from "./UnifiedMarketHub";
 
 type MainContentProps = {
   composedQuery: string;
@@ -71,6 +73,8 @@ type MainContentProps = {
   onLoadDetailsVps: (id: string) => void;
   onLoadDetailsOfficial: (id: string) => void;
   error: string | null;
+  vpsReady: boolean;
+  onAddUnifiedToBasket: (snap: UnifiedSearchSnapshot) => void;
 };
 
 export function MainContent(props: MainContentProps) {
@@ -137,10 +141,26 @@ export function MainContent(props: MainContentProps) {
     onLoadDetailsVps,
     onLoadDetailsOfficial,
     error,
+    vpsReady,
+    onAddUnifiedToBasket,
   } = props;
 
   return (
     <div className="layout-main">
+      <UnifiedMarketHub
+        vpsReady={vpsReady}
+        pcApiApiBase={pcApiApiBase}
+        pcApiApiKey={pcApiApiKey}
+        onPersistPcApiSettings={onPersistPcApiSettings}
+        onAddToBasket={onAddUnifiedToBasket}
+      />
+
+      <div className="my-10 border-t border-slate-200/80 pt-10">
+        <h2 className="mb-1 text-lg font-semibold text-slate-800">Advanced tools</h2>
+        <p className="mb-6 text-sm text-slate-500">
+          Narrow fields, recorded eBay search, and raw VPS DB panels — use when you need more than the market search
+          above.
+        </p>
       <section className="purchase-sheet" aria-label="Card lookup">
         <div className="form-grid">
           <label className="field">
@@ -638,6 +658,8 @@ export function MainContent(props: MainContentProps) {
           </button>
         </section>
       )}
+
+      </div>
 
       {error && <div className="error-banner">{error}</div>}
     </div>

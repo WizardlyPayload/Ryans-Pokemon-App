@@ -26,11 +26,11 @@ chromium.use(StealthPlugin());
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const CRAWLER_ENABLED = (process.env.CRAWLER_ENABLED || "true").toLowerCase() === "true";
-const GLOBAL_PAGES_PER_DAY = Math.max(1, Number(process.env.GLOBAL_PAGES_PER_DAY || 1000));
+const GLOBAL_PAGES_PER_DAY = Math.max(1, Number(process.env.GLOBAL_PAGES_PER_DAY || 10000));
 const US_SHARE = Math.min(1, Math.max(0, Number(process.env.US_SHARE ?? 0.5)));
 const UK_SHARE = Math.min(1, Math.max(0, Number(process.env.UK_SHARE ?? 0.5)));
-const MIN_DELAY_MS = Math.max(1000, Number(process.env.MIN_DELAY_MS || 8000));
-const MAX_DELAY_MS = Math.max(MIN_DELAY_MS, Number(process.env.MAX_DELAY_MS || 45000));
+const MIN_DELAY_MS = Math.max(1000, Number(process.env.MIN_DELAY_MS || 4000));
+const MAX_DELAY_MS = Math.max(MIN_DELAY_MS, Number(process.env.MAX_DELAY_MS || 15000));
 /** After bot_wall, wait longer before retry (eBay rate-limits / challenges datacenter headless). */
 const BOT_WALL_BACKOFF_MIN_MS = Math.max(
   60_000,

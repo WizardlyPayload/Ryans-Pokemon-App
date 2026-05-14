@@ -39,6 +39,9 @@ export type CardLoadout = {
     genre?: string;
     imageUrl?: string;
     pricechartingSearchUrl: string;
+    /** From VPS scrape when present */
+    cardVariant?: string | null;
+    populationSummaryText?: string | null;
   };
   tiers: TierView[];
   ebayActive: EbayListing[];

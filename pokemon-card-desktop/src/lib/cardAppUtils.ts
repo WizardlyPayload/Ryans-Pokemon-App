@@ -117,9 +117,22 @@ export function mapVpsProductToCardLoadout(detail: PcProductDetailResponse): Car
   }
 
   const metaBits = [p.cardNumber, p.releaseDate, p.publisher].filter(Boolean).join(" · ");
+  let populationSummaryText: string | null = null;
+  const ps = p.populationSummary;
+  if (ps != null && typeof ps === "object" && "text" in ps && typeof (ps as { text?: unknown }).text === "string") {
+    populationSummaryText = (ps as { text: string }).text.trim() || null;
+  } else if (ps != null) {
+    try {
+      populationSummaryText = JSON.stringify(ps).slice(0, 2000);
+    } catch {
+      populationSummaryText = null;
+    }
+  }
   const warnings: string[] = [
     "Prices from your private VPS scrape (cached HTML), not the live PriceCharting API.",
     ...(metaBits ? [`Catalog: ${metaBits}`] : []),
+    ...(p.cardVariant?.trim() ? [`Variant: ${p.cardVariant.trim().slice(0, 500)}`] : []),
+    ...(populationSummaryText ? [`Population: ${populationSummaryText.slice(0, 500)}`] : []),
     "eBay active listings were not loaded (add EBAY_CLIENT_ID / EBAY_CLIENT_SECRET for live comps).",
   ];
 
@@ -131,6 +144,8 @@ export function mapVpsProductToCardLoadout(detail: PcProductDetailResponse): Car
       genre,
       imageUrl: p.imageUrl ?? undefined,
       pricechartingSearchUrl: p.productUrl,
+      cardVariant: p.cardVariant ?? null,
+      populationSummaryText,
     },
     tiers: tierViews,
     ebayActive: [],

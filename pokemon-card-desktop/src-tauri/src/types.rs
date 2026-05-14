@@ -1,4 +1,4 @@
-﻿use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -115,6 +115,10 @@ pub struct PcSearchRow {
     pub card_number: Option<String>,
     pub release_date: Option<String>,
     pub publisher: Option<String>,
+    #[serde(default)]
+    pub card_variant: Option<String>,
+    #[serde(default)]
+    pub population_summary: Option<serde_json::Value>,
     pub tiers: serde_json::Value,
     pub snapshot_at: Option<String>,
     pub parse_version: Option<String>,
@@ -131,6 +135,10 @@ pub struct PcProductDetailProduct {
     pub card_number: Option<String>,
     pub release_date: Option<String>,
     pub publisher: Option<String>,
+    #[serde(default)]
+    pub card_variant: Option<String>,
+    #[serde(default)]
+    pub population_summary: Option<serde_json::Value>,
     pub first_seen_at: Option<String>,
     pub last_seen_at: Option<String>,
 }

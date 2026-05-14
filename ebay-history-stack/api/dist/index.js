@@ -81,6 +81,8 @@ app.get("/v1/pc/search", async (request) => {
        p.card_number AS "cardNumber",
        p.release_date AS "releaseDate",
        p.publisher,
+       p.card_variant AS "cardVariant",
+       p.population_summary AS "populationSummary",
        s.tiers,
        s.observed_at AS "snapshotAt",
        s.parse_version AS "parseVersion"
@@ -96,6 +98,8 @@ app.get("/v1/pc/search", async (request) => {
         OR p.console_or_category ILIKE $1 ESCAPE '\\'
         OR p.card_number ILIKE $1 ESCAPE '\\'
         OR p.publisher ILIKE $1 ESCAPE '\\'
+        OR (p.card_variant IS NOT NULL AND p.card_variant ILIKE $1 ESCAPE '\\')
+        OR (p.population_summary IS NOT NULL AND p.population_summary::text ILIKE $1 ESCAPE '\\')
      ORDER BY p.last_seen_at DESC
      LIMIT 50`, [pattern]);
     return {
@@ -117,6 +121,8 @@ app.get("/v1/pc/product/:id", async (request, reply) => {
        card_number AS "cardNumber",
        release_date AS "releaseDate",
        publisher,
+       card_variant AS "cardVariant",
+       population_summary AS "populationSummary",
        first_seen_at AS "firstSeenAt",
        last_seen_at AS "lastSeenAt"
      FROM pc_products WHERE pc_product_id = $1::bigint`, [raw]);
@@ -150,6 +156,8 @@ app.get("/v1/compare", async (request) => {
        p.card_number AS "cardNumber",
        p.release_date AS "releaseDate",
        p.publisher,
+       p.card_variant AS "cardVariant",
+       p.population_summary AS "populationSummary",
        s.tiers,
        s.observed_at AS "snapshotAt",
        s.parse_version AS "parseVersion"
@@ -165,6 +173,8 @@ app.get("/v1/compare", async (request) => {
         OR p.console_or_category ILIKE $1 ESCAPE '\\'
         OR p.card_number ILIKE $1 ESCAPE '\\'
         OR p.publisher ILIKE $1 ESCAPE '\\'
+        OR (p.card_variant IS NOT NULL AND p.card_variant ILIKE $1 ESCAPE '\\')
+        OR (p.population_summary IS NOT NULL AND p.population_summary::text ILIKE $1 ESCAPE '\\')
      ORDER BY p.last_seen_at DESC
      LIMIT 50`, [pattern]);
     const ebay = await ebaySearchResults(q);
@@ -203,6 +213,8 @@ app.get("/v1/unified-search", async (request) => {
        p.card_number AS "cardNumber",
        p.release_date AS "releaseDate",
        p.publisher,
+       p.card_variant AS "cardVariant",
+       p.population_summary AS "populationSummary",
        p.first_seen_at AS "firstSeenAt",
        p.last_seen_at AS "lastSeenAt"
      FROM pc_products p
@@ -210,11 +222,14 @@ app.get("/v1/unified-search", async (request) => {
         OR p.console_or_category ILIKE $1 ESCAPE '\\'
         OR p.card_number ILIKE $1 ESCAPE '\\'
         OR p.publisher ILIKE $1 ESCAPE '\\'
+        OR (p.card_variant IS NOT NULL AND p.card_variant ILIKE $1 ESCAPE '\\')
+        OR (p.population_summary IS NOT NULL AND p.population_summary::text ILIKE $1 ESCAPE '\\')
      ORDER BY p.last_seen_at DESC
      LIMIT 1`, [pattern]);
     const product = productQ.rows[0] ?? null;
     let latestSnapshot = null;
     if (product?.pcProductId) {
+        /** `tiers` / grades are written only when pc-crawler visits each card's PriceCharting product page (`product_url`), not from search HTML. */
         const snapQ = await pool.query(`SELECT
          tiers,
          extras,
@@ -226,6 +241,7 @@ app.get("/v1/unified-search", async (request) => {
        LIMIT 1`, [product.pcProductId]);
         latestSnapshot = snapQ.rows[0] ?? null;
     }
+    /** Last 20 crawler observations for this title match (newest first). Price may be null if not captured. */
     const recentQ = await pool.query(`SELECT
        o.ebay_item_id::text AS "ebayItemId",
        o.title,
@@ -236,9 +252,8 @@ app.get("/v1/unified-search", async (request) => {
        o.page_url AS "pageUrl"
      FROM listing_observations o
      WHERE o.title ILIKE $1 ESCAPE '\\'
-       AND ${PRICE_NUMERIC_SQL} IS NOT NULL
-     ORDER BY o.observed_at DESC
-     LIMIT 30`, [pattern]);
+     ORDER BY o.observed_at DESC NULLS LAST
+     LIMIT 20`, [pattern]);
     const avgQ = await pool.query(`SELECT
        COUNT(*)::int AS "count",
        AVG(${PRICE_NUMERIC_SQL})::numeric(12,2) AS "avg"
@@ -247,8 +262,8 @@ app.get("/v1/unified-search", async (request) => {
        FROM listing_observations o
        WHERE o.title ILIKE $1 ESCAPE '\\'
          AND ${PRICE_NUMERIC_SQL} IS NOT NULL
-       ORDER BY o.observed_at DESC
-       LIMIT 30
+       ORDER BY o.observed_at DESC NULLS LAST
+       LIMIT 20
      ) o`, [pattern]);
     const avgRow = avgQ.rows[0];
     return {

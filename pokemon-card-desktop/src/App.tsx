@@ -523,6 +523,31 @@ export default function App() {
     return card.product.productName;
   }, [card, composedQuery]);
 
+  const vpsReady = useMemo(
+    () =>
+      (pcApiApiBase.trim().length > 0 || pcApiEnvHint.hasEnvBase) &&
+      (pcApiApiKey.trim().length > 0 || pcApiEnvHint.hasEnvKey),
+    [pcApiApiBase, pcApiApiKey, pcApiEnvHint.hasEnvBase, pcApiEnvHint.hasEnvKey],
+  );
+
+  const addUnifiedSnapshotToBasket = useCallback((snap: UnifiedSearchSnapshot) => {
+    if (!snap.product) return;
+    const tempCard = mapVpsProductToCardLoadout({
+      product: snap.product,
+      latestSnapshot: snap.latestSnapshot ?? null,
+    });
+    const ref = pickReferenceCents(tempCard);
+    const row: BasketRow = {
+      id: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
+      addedAt: new Date().toISOString(),
+      cardLabel: snap.product.title,
+      paidCents: null,
+      currentValueCents: ref,
+      method: "",
+    };
+    setBasket((prev) => [row, ...prev]);
+  }, []);
+
   const debouncedQuery = useDebouncedValue(composedQuery, 750);
   const [liveSearch, setLiveSearch] = useState(false);
 
@@ -541,9 +566,10 @@ export default function App() {
     <div className="app theme-light app-root min-h-screen">
       <header className="header header-shell">
         <div>
-          <h1>Pokémon purchase sheet</h1>
+          <h1 className="text-slate-900">Pokémon card desktop</h1>
           <p className="tagline">
-            Enter detailed card info, fetch market data, then use 70% cash / 80% trade offers as your baseline.
+            Market search pulls PriceCharting scrape + eBay crawler data from your VPS. Advanced tools below for narrow
+            purchase fields and raw API panels.
           </p>
         </div>
         <button type="button" className="linkish" onClick={() => setShowAbout(true)}>
@@ -622,6 +648,8 @@ export default function App() {
           onLoadDetailsVps={loadDetailsVps}
           onLoadDetailsOfficial={loadDetailsOfficial}
           error={error}
+          vpsReady={vpsReady}
+          onAddUnifiedToBasket={addUnifiedSnapshotToBasket}
         />
 
         {detailPanelOpen && (

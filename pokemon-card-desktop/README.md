@@ -1,6 +1,8 @@
-# Pokémon Card Desktop
+## Pokémon Card Desktop - Undergoing Enhancements
 
 Tauri + React app for Pokémon card pricing: **PriceCharting** tiers and marketplace sold rows, **eBay active listings** (Browse API), optional **recorded eBay comps** from your self-hosted API.
+
+This project is currently undergoing enhancements to its crawler intelligence and frontend user experience.
 
 ## Setup & usage
 

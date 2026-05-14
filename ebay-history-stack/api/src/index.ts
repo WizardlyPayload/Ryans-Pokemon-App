@@ -112,6 +112,8 @@ app.get("/v1/pc/search", async (request) => {
         OR p.console_or_category ILIKE $1 ESCAPE '\\'
         OR p.card_number ILIKE $1 ESCAPE '\\'
         OR p.publisher ILIKE $1 ESCAPE '\\'
+        OR (p.card_variant IS NOT NULL AND p.card_variant ILIKE $1 ESCAPE '\\')
+        OR (p.population_summary IS NOT NULL AND p.population_summary::text ILIKE $1 ESCAPE '\\')
      ORDER BY p.last_seen_at DESC
      LIMIT 50`,
     [pattern],
@@ -196,6 +198,8 @@ app.get("/v1/compare", async (request) => {
         OR p.console_or_category ILIKE $1 ESCAPE '\\'
         OR p.card_number ILIKE $1 ESCAPE '\\'
         OR p.publisher ILIKE $1 ESCAPE '\\'
+        OR (p.card_variant IS NOT NULL AND p.card_variant ILIKE $1 ESCAPE '\\')
+        OR (p.population_summary IS NOT NULL AND p.population_summary::text ILIKE $1 ESCAPE '\\')
      ORDER BY p.last_seen_at DESC
      LIMIT 50`,
     [pattern],
@@ -249,6 +253,8 @@ app.get("/v1/unified-search", async (request) => {
         OR p.console_or_category ILIKE $1 ESCAPE '\\'
         OR p.card_number ILIKE $1 ESCAPE '\\'
         OR p.publisher ILIKE $1 ESCAPE '\\'
+        OR (p.card_variant IS NOT NULL AND p.card_variant ILIKE $1 ESCAPE '\\')
+        OR (p.population_summary IS NOT NULL AND p.population_summary::text ILIKE $1 ESCAPE '\\')
      ORDER BY p.last_seen_at DESC
      LIMIT 1`,
     [pattern],
@@ -262,6 +268,7 @@ app.get("/v1/unified-search", async (request) => {
     parseVersion: string | null;
   } | null = null;
   if (product?.pcProductId) {
+    /** `tiers` / grades are written only when pc-crawler visits each card's PriceCharting product page (`product_url`), not from search HTML. */
     const snapQ = await pool.query(
       `SELECT
          tiers,
@@ -277,6 +284,7 @@ app.get("/v1/unified-search", async (request) => {
     latestSnapshot = snapQ.rows[0] ?? null;
   }
 
+  /** Last 20 crawler observations for this title match (newest first). Price may be null if not captured. */
   const recentQ = await pool.query(
     `SELECT
        o.ebay_item_id::text AS "ebayItemId",
@@ -288,9 +296,8 @@ app.get("/v1/unified-search", async (request) => {
        o.page_url AS "pageUrl"
      FROM listing_observations o
      WHERE o.title ILIKE $1 ESCAPE '\\'
-       AND ${PRICE_NUMERIC_SQL} IS NOT NULL
-     ORDER BY o.observed_at DESC
-     LIMIT 30`,
+     ORDER BY o.observed_at DESC NULLS LAST
+     LIMIT 20`,
     [pattern],
   );
 
@@ -303,8 +310,8 @@ app.get("/v1/unified-search", async (request) => {
        FROM listing_observations o
        WHERE o.title ILIKE $1 ESCAPE '\\'
          AND ${PRICE_NUMERIC_SQL} IS NOT NULL
-       ORDER BY o.observed_at DESC
-       LIMIT 30
+       ORDER BY o.observed_at DESC NULLS LAST
+       LIMIT 20
      ) o`,
     [pattern],
   );

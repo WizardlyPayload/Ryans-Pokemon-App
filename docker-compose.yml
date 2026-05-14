@@ -71,8 +71,15 @@ services:
     environment:
       DATABASE_URL: postgres://ebayhist:${POSTGRES_PASSWORD:-ebayhist_dev_change_me}@postgres:5432/ebay_history
       PC_CRAWLER_ENABLED: ${PC_CRAWLER_ENABLED:-true}
+      # pokemon_category = TCG hub → each /console/pokemon-* set → /game/ cards only. search = keyword search-products.
+      PC_DISCOVERY_MODE: ${PC_DISCOVERY_MODE:-pokemon_category}
+      PC_CATEGORY_URL: ${PC_CATEGORY_URL:-https://www.pricecharting.com/category/pokemon-cards}
+      PC_CATEGORY_MAX_SET_PAGES: ${PC_CATEGORY_MAX_SET_PAGES:-0}
+      PC_ONLY_POKEMON_GAME_URLS: ${PC_ONLY_POKEMON_GAME_URLS:-true}
       PC_SEARCH_QUERY: ${PC_SEARCH_QUERY:-pikachu}
       PC_PRODUCTS_PER_RUN: ${PC_PRODUCTS_PER_RUN:-0}
+      PC_FETCH_CONCURRENCY: ${PC_FETCH_CONCURRENCY:-2}
+      PC_SEARCH_PAGE_CONCURRENCY: ${PC_SEARCH_PAGE_CONCURRENCY:-3}
       PC_MIN_DELAY_MS: ${PC_MIN_DELAY_MS:-3000}
       PC_MAX_DELAY_MS: ${PC_MAX_DELAY_MS:-14000}
       PC_LOOP_INTERVAL_MS: ${PC_LOOP_INTERVAL_MS:-3600000}
