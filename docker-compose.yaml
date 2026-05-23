@@ -43,6 +43,7 @@ services:
       context: ./ebay-history-stack
       dockerfile: crawler/Dockerfile
     restart: unless-stopped
+    tty: true
     depends_on:
       postgres:
         condition: service_healthy
@@ -70,6 +71,7 @@ services:
       context: ./ebay-history-stack
       dockerfile: pc-crawler/Dockerfile
     restart: unless-stopped
+    tty: true
     depends_on:
       postgres:
         condition: service_healthy

@@ -709,6 +709,9 @@ async function main() {
 
   let browser: Browser | null = await launchChromium();
 
+  let disabledIdleLogs = 0;
+  let marketIdleLogs = 0;
+
   const shutdown = async () => {
     if (browser) {
       await browser.close();
@@ -722,9 +725,20 @@ async function main() {
 
   while (true) {
     if (!CRAWLER_ENABLED) {
+      disabledIdleLogs += 1;
+      if (disabledIdleLogs === 1 || disabledIdleLogs % 10 === 0) {
+        console.log(
+          JSON.stringify({
+            msg: "crawler_disabled_idle",
+            wakeups: disabledIdleLogs,
+            hint: "Set CRAWLER_ENABLED=true or remove it from compose to run.",
+          }),
+        );
+      }
       await sleep(60_000);
       continue;
     }
+    disabledIdleLogs = 0;
 
     if (!browser) {
       browser = await launchChromium();
@@ -748,9 +762,22 @@ async function main() {
     } else if (canUs) market = "us";
     else if (canUk) market = "uk";
     else {
+      marketIdleLogs += 1;
+      if (marketIdleLogs === 1 || marketIdleLogs % 6 === 0) {
+        console.log(
+          JSON.stringify({
+            msg: "crawler_market_caps_idle",
+            day,
+            budget,
+            caps,
+            hint: "Per-market daily caps reached (US_SHARE/UK_SHARE vs GLOBAL_PAGES_PER_DAY). Sleeping 1h; no pages crawled until caps reset or budget row changes.",
+          }),
+        );
+      }
       await sleep(3600_000);
       continue;
     }
+    marketIdleLogs = 0;
     lastMarket = market;
 
     const seedUrl = market === "us" ? US_SEED : UK_SEED;

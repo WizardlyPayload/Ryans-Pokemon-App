@@ -5,11 +5,11 @@ import { createPool, ensureSchema, incrementBudget, getBudget, ensureBudgetRow, 
 chromium.use(StealthPlugin());
 const DATABASE_URL = process.env.DATABASE_URL;
 const CRAWLER_ENABLED = (process.env.CRAWLER_ENABLED || "true").toLowerCase() === "true";
-const GLOBAL_PAGES_PER_DAY = Math.max(1, Number(process.env.GLOBAL_PAGES_PER_DAY || 1000));
+const GLOBAL_PAGES_PER_DAY = Math.max(1, Number(process.env.GLOBAL_PAGES_PER_DAY || 10000));
 const US_SHARE = Math.min(1, Math.max(0, Number(process.env.US_SHARE ?? 0.5)));
 const UK_SHARE = Math.min(1, Math.max(0, Number(process.env.UK_SHARE ?? 0.5)));
-const MIN_DELAY_MS = Math.max(1000, Number(process.env.MIN_DELAY_MS || 8000));
-const MAX_DELAY_MS = Math.max(MIN_DELAY_MS, Number(process.env.MAX_DELAY_MS || 45000));
+const MIN_DELAY_MS = Math.max(1000, Number(process.env.MIN_DELAY_MS || 4000));
+const MAX_DELAY_MS = Math.max(MIN_DELAY_MS, Number(process.env.MAX_DELAY_MS || 15000));
 /** After bot_wall, wait longer before retry (eBay rate-limits / challenges datacenter headless). */
 const BOT_WALL_BACKOFF_MIN_MS = Math.max(60_000, Number(process.env.BOT_WALL_BACKOFF_MIN_MS || 180_000));
 const BOT_WALL_BACKOFF_MAX_MS = Math.max(BOT_WALL_BACKOFF_MIN_MS, Number(process.env.BOT_WALL_BACKOFF_MAX_MS || 600_000));
@@ -603,6 +603,8 @@ async function main() {
         itemPriceOcr: ITEM_PRICE_OCR,
     }));
     let browser = await launchChromium();
+    let disabledIdleLogs = 0;
+    let marketIdleLogs = 0;
     const shutdown = async () => {
         if (browser) {
             await browser.close();
@@ -615,9 +617,18 @@ async function main() {
     process.on("SIGTERM", shutdown);
     while (true) {
         if (!CRAWLER_ENABLED) {
+            disabledIdleLogs += 1;
+            if (disabledIdleLogs === 1 || disabledIdleLogs % 10 === 0) {
+                console.log(JSON.stringify({
+                    msg: "crawler_disabled_idle",
+                    wakeups: disabledIdleLogs,
+                    hint: "Set CRAWLER_ENABLED=true or remove it from compose to run.",
+                }));
+            }
             await sleep(60_000);
             continue;
         }
+        disabledIdleLogs = 0;
         if (!browser) {
             browser = await launchChromium();
         }
@@ -640,9 +651,20 @@ async function main() {
         else if (canUk)
             market = "uk";
         else {
+            marketIdleLogs += 1;
+            if (marketIdleLogs === 1 || marketIdleLogs % 6 === 0) {
+                console.log(JSON.stringify({
+                    msg: "crawler_market_caps_idle",
+                    day,
+                    budget,
+                    caps,
+                    hint: "Per-market daily caps reached (US_SHARE/UK_SHARE vs GLOBAL_PAGES_PER_DAY). Sleeping 1h; no pages crawled until caps reset or budget row changes.",
+                }));
+            }
             await sleep(3600_000);
             continue;
         }
+        marketIdleLogs = 0;
         lastMarket = market;
         const seedUrl = market === "us" ? US_SEED : UK_SEED;
         const pageNum = await getCrawlPage(pool, market, SEED_KEY);

@@ -3,7 +3,12 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import pg from "pg";
 const { Pool } = pg;
-const MIGRATION_BASENAMES = ["001_init.sql", "002_pc_scrape.sql"];
+const MIGRATION_BASENAMES = [
+    "001_init.sql",
+    "002_pc_scrape.sql",
+    "003_pc_product_metadata.sql",
+    "004_pc_population_variant.sql",
+];
 const ADV_LOCK_K1 = 8129347;
 const ADV_LOCK_K2 = 291834;
 function resolveMigrationPaths() {

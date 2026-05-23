@@ -467,6 +467,10 @@ async function collectGameLinks(page, searchUrl) {
     return extractPcGameLinksFromOpenPage(page, { msg: "pc_search_no_links", url: searchUrl });
 }
 async function discoverPokemonCategoryLinks(ctx) {
+    console.log(JSON.stringify({
+        msg: "pc_category_discovery_start",
+        categoryUrl: PC_CATEGORY_URL,
+    }));
     const catPage = await ctx.newPage();
     let pagesVisited = 0;
     let consoleUrls = [];
@@ -503,6 +507,11 @@ async function discoverPokemonCategoryLinks(ctx) {
     if (setCap > 0) {
         consoleUrls = consoleUrls.slice(0, setCap);
     }
+    console.log(JSON.stringify({
+        msg: "pc_category_sets_queued",
+        uniqueSetPages: consoleUrls.length,
+        categoryMaxSetPages: setCap,
+    }));
     const seenGame = new Set();
     const conc = PC_SEARCH_PAGE_CONCURRENCY;
     for (let i = 0; i < consoleUrls.length; i += conc) {
@@ -524,6 +533,13 @@ async function discoverPokemonCategoryLinks(ctx) {
                 seenGame.add(h);
             }
         }
+        console.log(JSON.stringify({
+            msg: "pc_category_set_wave_done",
+            waveIndex: Math.floor(i / conc) + 1,
+            waveSets: wave.length,
+            cumulativeGameLinks: seenGame.size,
+            setsTotal: consoleUrls.length,
+        }));
     }
     if (consoleUrls.length > 0 && seenGame.size === 0) {
         console.log(JSON.stringify({
@@ -645,6 +661,7 @@ async function runBatch(browser, pool) {
         extraHTTPHeaders: profile.extraHTTPHeaders,
     });
     try {
+        console.log(JSON.stringify({ msg: "pc_batch_begin", at: new Date().toISOString() }));
         let allLinks = [];
         let pagesVisited = 0;
         let discoveryLog;
@@ -672,6 +689,11 @@ async function runBatch(browser, pool) {
             const seen = new Set();
             let searchPage = 1;
             while (searchPage <= PC_SEARCH_MAX_PAGES) {
+                console.log(JSON.stringify({
+                    msg: "pc_search_wave_begin",
+                    searchPageFrom: searchPage,
+                    query: PC_SEARCH_QUERY,
+                }));
                 if (PC_SEARCH_PAGES_PER_RUN > 0 && searchPage > PC_SEARCH_PAGES_PER_RUN)
                     break;
                 const waveEnd = Math.min(searchPage + PC_SEARCH_PAGE_CONCURRENCY - 1, PC_SEARCH_MAX_PAGES);
@@ -712,6 +734,12 @@ async function runBatch(browser, pool) {
                 if (hitEmpty)
                     break;
                 searchPage = pageNums[pageNums.length - 1] + 1;
+                console.log(JSON.stringify({
+                    msg: "pc_search_wave_done",
+                    searchPagesVisited: pagesVisited,
+                    uniqueGameLinks: allLinks.length,
+                    hitEmpty,
+                }));
             }
             discoveryLog = {
                 msg: "pc_discovery_links",
@@ -726,6 +754,19 @@ async function runBatch(browser, pool) {
         const effectiveCap = PC_PRODUCTS_PER_RUN > 0 ? PC_PRODUCTS_PER_RUN : allLinks.length;
         const slice = allLinks.slice(0, effectiveCap);
         const workers = Math.min(PC_FETCH_CONCURRENCY, Math.max(1, slice.length));
+        if (slice.length === 0) {
+            console.log(JSON.stringify({
+                msg: "pc_batch_no_products_to_scrape",
+                hint: "Discovery returned no /game/ links after Pokémon filter, or cap is zero.",
+            }));
+        }
+        else {
+            console.log(JSON.stringify({
+                msg: "pc_product_scrape_begin",
+                toScrape: slice.length,
+                fetchConcurrency: workers,
+            }));
+        }
         console.log(JSON.stringify({
             ...discoveryLog,
             onlyPokemonGameUrls: PC_ONLY_POKEMON_GAME_URLS,
@@ -798,6 +839,7 @@ async function main() {
         parseVersion: PARSE_VERSION,
     }));
     let browser = await launchChromium();
+    let pcDisabledWakeups = 0;
     const shutdown = async () => {
         if (browser) {
             await browser.close();
@@ -810,9 +852,18 @@ async function main() {
     process.on("SIGTERM", shutdown);
     while (true) {
         if (!PC_CRAWLER_ENABLED) {
+            pcDisabledWakeups += 1;
+            if (pcDisabledWakeups === 1 || pcDisabledWakeups % 10 === 0) {
+                console.log(JSON.stringify({
+                    msg: "pc_crawler_disabled_idle",
+                    wakeups: pcDisabledWakeups,
+                    hint: "Set PC_CRAWLER_ENABLED=true to run PriceCharting batches.",
+                }));
+            }
             await sleep(60_000);
             continue;
         }
+        pcDisabledWakeups = 0;
         if (!browser) {
             browser = await launchChromium();
         }
@@ -826,6 +877,11 @@ async function main() {
                 browser = null;
             }
         }
+        console.log(JSON.stringify({
+            msg: "pc_batch_sleep",
+            sleepMs: PC_LOOP_INTERVAL_MS,
+            nextBatchApprox: new Date(Date.now() + PC_LOOP_INTERVAL_MS).toISOString(),
+        }));
         await sleep(PC_LOOP_INTERVAL_MS);
     }
 }

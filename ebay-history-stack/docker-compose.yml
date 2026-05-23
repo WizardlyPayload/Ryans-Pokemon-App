@@ -40,6 +40,7 @@ services:
       context: .
       dockerfile: crawler/Dockerfile
     restart: unless-stopped
+    tty: true
     depends_on:
       postgres:
         condition: service_healthy
@@ -60,6 +61,7 @@ services:
       context: .
       dockerfile: pc-crawler/Dockerfile
     restart: unless-stopped
+    tty: true
     depends_on:
       postgres:
         condition: service_healthy
